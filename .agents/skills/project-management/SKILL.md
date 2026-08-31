@@ -56,6 +56,8 @@ Default it off for every project and every posture, and enable it only on the ca
 
 Confirm the source URL, local project name, delivery posture, and autonomy posture, stating the resolved default for each rather than asking the captain to invent one.
 Clone into `projects/<name>` and add the registry entry only after the destination is known to be unused.
+`gh-axi repo clone` takes only the `<repo>` argument; it silently accepts and ignores an extra destination path instead of erroring, cloning into the current directory under the repo's own name.
+Always run it as `(cd projects && gh-axi repo clone <owner>/<repo>)` so the clone lands at `projects/<name>`, and verify the directory actually exists afterward rather than trusting its printed "clone: ok" alone.
 A `no-mistakes` or `no-mistakes-prod-only` project must have an `origin` remote and must complete the initialization procedure below, because a conditional policy's product-facing work runs the pipeline while its internal-only work still takes the direct PR.
 A `direct-PR` project needs an `origin` remote but skips no-mistakes initialization.
 A `local-only` project may have no remote and skips no-mistakes initialization.
