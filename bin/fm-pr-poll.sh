@@ -63,7 +63,20 @@ case "$provider" in
     esac
     [ "$url" = "https://github.com/$owner/$repo/pull/$number" ] || exit 0
     state=$(gh pr view "$url" --json state -q .state 2>/dev/null) || exit 0
-    [ "$state" = MERGED ] && printf '%s\n' merged
+    if [ "$state" = MERGED ]; then
+      printf '%s\n' merged
+      exit 0
+    fi
+    # Not merged: a second, separate query checks for an actionable review
+    # verdict, so the untouched merge check above keeps its exact original
+    # shape and cost for the common (still-open, no review yet) case.
+    review_info=$(gh pr view "$url" --json reviewDecision,headRefOid \
+      -q '(.reviewDecision // "") + "\t" + .headRefOid' 2>/dev/null) || exit 0
+    review=${review_info%%$'\t'*}
+    head=${review_info#*$'\t'}
+    [ "$review" != "$review_info" ] || exit 0
+    [ "$review" = CHANGES_REQUESTED ] && [ -n "$head" ] \
+      && printf 'changes_requested\t%s\n' "$head"
     ;;
   gitlab)
     [ "${#host}" -ge 1 ] && [ "${#host}" -le 253 ] || exit 0

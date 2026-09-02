@@ -589,8 +589,6 @@ fm_pr_poll_artifacts_valid() {
   fm_pr_private_file_valid "$check" 600 "$state_device" || return 1
   fm_pr_private_file_valid "$data" 600 "$state_device" || return 1
   fm_pr_private_file_valid "$registration" 600 "$state_device" || return 1
-  [ -f "$meta" ] && [ ! -L "$meta" ] || return 1
-  [ "$(fm_pr_file_link_count "$meta")" = 1 ] || return 1
   cmp -s "$template" "$check" || return 1
   fm_pr_poll_data_parse "$data" || return 1
   data_hash=$(fm_pr_sha256 "$data") || return 1
@@ -608,12 +606,25 @@ fm_pr_poll_artifacts_valid() {
   [ "$FM_PR_REG_TEMPLATE_HASH" = "$template_hash" ] || return 1
   [ "$FM_PR_REG_DATA_IDENTITY" = "$data_identity" ] || return 1
   [ "$FM_PR_REG_CHECK_IDENTITY" = "$check_identity" ] || return 1
-  fm_pr_metadata_identity_parse "$meta" || return 1
-  [ "$FM_PR_META_PROVIDER" = "$FM_PR_DATA_PROVIDER" ] || return 1
-  [ "$FM_PR_META_URL" = "$FM_PR_DATA_URL" ] || return 1
-  [ "$FM_PR_META_HOST" = "$FM_PR_DATA_HOST" ] || return 1
-  [ "$FM_PR_META_PATH" = "$FM_PR_DATA_PATH" ] || return 1
-  [ "$FM_PR_META_NUMBER" = "$FM_PR_DATA_NUMBER" ]
+  if [ -e "$meta" ] || [ -L "$meta" ]; then
+    [ -f "$meta" ] && [ ! -L "$meta" ] || return 1
+    [ "$(fm_pr_file_link_count "$meta")" = 1 ] || return 1
+    fm_pr_metadata_identity_parse "$meta" || return 1
+    [ "$FM_PR_META_PROVIDER" = "$FM_PR_DATA_PROVIDER" ] || return 1
+    [ "$FM_PR_META_URL" = "$FM_PR_DATA_URL" ] || return 1
+    [ "$FM_PR_META_HOST" = "$FM_PR_DATA_HOST" ] || return 1
+    [ "$FM_PR_META_PATH" = "$FM_PR_DATA_PATH" ] || return 1
+    [ "$FM_PR_META_NUMBER" = "$FM_PR_DATA_NUMBER" ]
+  else
+    # A ship task is torn down as soon as its PR is open (AGENTS.md section 7),
+    # well before merge, so state/<id>.meta is long gone by the time this poll
+    # retires. The release marker (written only by bin/fm-teardown.sh, at the
+    # moment it preserves a still-live, unmerged poll instead of deleting it)
+    # takes over meta's identity-binding role so a stale or re-pointed poll
+    # still cannot validate silently once its owning task record is gone.
+    fm_pr_poll_release_marked "$state" "$id" \
+      "$FM_PR_DATA_PROVIDER" "$FM_PR_DATA_HOST" "$FM_PR_DATA_PATH" "$FM_PR_DATA_NUMBER"
+  fi
 }
 
 fm_pr_poll_snapshot_capture() {
@@ -728,12 +739,20 @@ fm_pr_poll_retirement_receipt_valid() {
   fm_pr_poll_retirement_parse "$receipt" || return 1
   [ "$FM_PR_RETIRE_ID" = "$id" ] || return 1
   meta="$state/$id.meta"
-  fm_pr_metadata_identity_parse "$meta" || return 1
-  [ "$FM_PR_META_PROVIDER" = "$FM_PR_RETIRE_PROVIDER" ] || return 1
-  [ "$FM_PR_META_URL" = "$FM_PR_RETIRE_URL" ] || return 1
-  [ "$FM_PR_META_HOST" = "$FM_PR_RETIRE_HOST" ] || return 1
-  [ "$FM_PR_META_PATH" = "$FM_PR_RETIRE_PATH" ] || return 1
-  [ "$FM_PR_META_NUMBER" = "$FM_PR_RETIRE_NUMBER" ] || return 1
+  if [ -e "$meta" ] || [ -L "$meta" ]; then
+    fm_pr_metadata_identity_parse "$meta" || return 1
+    [ "$FM_PR_META_PROVIDER" = "$FM_PR_RETIRE_PROVIDER" ] || return 1
+    [ "$FM_PR_META_URL" = "$FM_PR_RETIRE_URL" ] || return 1
+    [ "$FM_PR_META_HOST" = "$FM_PR_RETIRE_HOST" ] || return 1
+    [ "$FM_PR_META_PATH" = "$FM_PR_RETIRE_PATH" ] || return 1
+    [ "$FM_PR_META_NUMBER" = "$FM_PR_RETIRE_NUMBER" ] || return 1
+  else
+    # Same early-teardown release marker fm_pr_poll_artifacts_valid accepts: a
+    # ship task's state/<id>.meta is gone long before an unmerged poll it left
+    # behind eventually retires.
+    fm_pr_poll_release_marked "$state" "$id" \
+      "$FM_PR_RETIRE_PROVIDER" "$FM_PR_RETIRE_HOST" "$FM_PR_RETIRE_PATH" "$FM_PR_RETIRE_NUMBER" || return 1
+  fi
   FM_PR_RETIRE_RECEIPT_HASH=$(fm_pr_sha256 "$receipt") || return 1
   FM_PR_RETIRE_RECEIPT_IDENTITY=$(fm_pr_file_identity "$receipt") || return 1
 }
@@ -919,6 +938,7 @@ fm_pr_poll_retirement_recover_one() {
   fi
   fm_pr_poll_retirement_remove_exact "$receipt" "$state_device" \
     "$receipt_identity" "$receipt_hash" || return 1
+  fm_pr_poll_release_marker_remove "$state" "$id" || return 1
   [ ! -e "$check" ] && [ ! -L "$check" ] \
     && [ ! -e "$registration" ] && [ ! -L "$registration" ] \
     && [ ! -e "$data" ] && [ ! -L "$data" ] \
@@ -1010,6 +1030,79 @@ fm_pr_poll_merge_notified_remove() {  # <state> <id>
   local state=$1 id=$2 marker
   fm_pr_task_id_valid "$id" || return 1
   marker="$state/$id.pr-poll-merge-notified"
+  [ -e "$marker" ] || [ -L "$marker" ] || return 0
+  [ -f "$marker" ] && [ ! -L "$marker" ] || return 1
+  rm -f -- "$marker"
+}
+
+# --- early-teardown release marker -------------------------------------------
+# A ship task is torn down as soon as its PR is open (AGENTS.md section 7),
+# well before merge, so state/<id>.meta is gone long before this poll retires.
+# bin/fm-teardown.sh writes this marker instead of deleting a still-live,
+# unmerged poll, and it takes over meta's identity-binding role in
+# fm_pr_poll_artifacts_valid so a stale or re-pointed poll still cannot
+# validate silently once its owning task record is gone. Removed alongside the
+# rest of the poll's artifacts once fm_pr_poll_retirement_recover_one confirms
+# the merge.
+fm_pr_poll_release_marker_matches() {  # <marker> <device> <provider> <host> <path> <number>
+  local marker=$1 device=$2 expected_provider=$3 expected_host=$4 expected_path=$5 expected_number=$6
+  local version provider host path number
+  fm_pr_private_file_valid "$marker" 600 "$device" || return 1
+  exec 8< "$marker" || return 1
+  IFS= read -r version <&8 || { exec 8<&-; return 1; }
+  IFS= read -r provider <&8 || { exec 8<&-; return 1; }
+  IFS= read -r host <&8 || { exec 8<&-; return 1; }
+  IFS= read -r path <&8 || { exec 8<&-; return 1; }
+  IFS= read -r number <&8 || { exec 8<&-; return 1; }
+  if IFS= read -r _extra <&8; then
+    exec 8<&-
+    return 1
+  fi
+  exec 8<&-
+  [ "$version" = fm-pr-poll-released-v1 ] \
+    && [ "$provider" = "$expected_provider" ] \
+    && [ "$host" = "$expected_host" ] \
+    && [ "$path" = "$expected_path" ] \
+    && [ "$number" = "$expected_number" ]
+}
+
+fm_pr_poll_release_marked() {  # <state> <id> <provider> <host> <path> <number>
+  local state=$1 id=$2 provider=$3 host=$4 path=$5 number=$6 marker state_device
+  fm_pr_task_id_valid "$id" || return 1
+  [ -d "$state" ] && [ ! -L "$state" ] || return 1
+  state_device=$(fm_pr_file_device "$state") || return 1
+  marker="$state/$id.pr-poll-released"
+  fm_pr_poll_release_marker_matches "$marker" "$state_device" \
+    "$provider" "$host" "$path" "$number"
+}
+
+fm_pr_poll_release_mark() {  # <state> <id> <provider> <host> <path> <number>
+  local state=$1 id=$2 provider=$3 host=$4 path=$5 number=$6 marker tmp state_device
+  fm_pr_task_id_valid "$id" || return 1
+  [ -d "$state" ] && [ ! -L "$state" ] || return 1
+  state_device=$(fm_pr_file_device "$state") || return 1
+  marker="$state/$id.pr-poll-released"
+  fm_pr_regular_destination_on_device_or_absent "$marker" "$state_device" || return 1
+  umask 077
+  tmp=$(mktemp "$state/.fm-pr-poll-released.XXXXXX") || return 1
+  if ! printf '%s\n%s\n%s\n%s\n%s\n' \
+      fm-pr-poll-released-v1 "$provider" "$host" "$path" "$number" > "$tmp" \
+    || ! chmod 0600 "$tmp" \
+    || ! fm_pr_poll_release_marker_matches "$tmp" "$state_device" \
+      "$provider" "$host" "$path" "$number" \
+    || ! fm_pr_regular_destination_on_device_or_absent "$marker" "$state_device" \
+    || ! mv -f -- "$tmp" "$marker" \
+    || ! fm_pr_poll_release_marker_matches "$marker" "$state_device" \
+      "$provider" "$host" "$path" "$number"; then
+    rm -f -- "$tmp"
+    return 1
+  fi
+}
+
+fm_pr_poll_release_marker_remove() {  # <state> <id>
+  local state=$1 id=$2 marker
+  fm_pr_task_id_valid "$id" || return 1
+  marker="$state/$id.pr-poll-released"
   [ -e "$marker" ] || [ -L "$marker" ] || return 0
   [ -f "$marker" ] && [ ! -L "$marker" ] || return 1
   rm -f -- "$marker"

@@ -46,9 +46,16 @@
 # unresolved-decision completion gate verifies its captain-held inventory.
 # Before destructive cleanup, teardown validates task check artifacts as
 # ordinary single-link files on the state device. It refuses and preserves
-# task state when that proof fails; otherwise it removes the task's check,
-# trust record, PR sidecar, and publication record with the rest of the
-# volatile state.
+# task state when that proof fails. A ship task is ordinarily torn down as
+# soon as its PR is open (AGENTS.md section 7), well before merge, so a still
+# valid, not-yet-merged PR poll is PRESERVED here rather than removed - it
+# marks itself with state/<id>.pr-poll-released (bin/fm-pr-lib.sh) so it can
+# keep validating without this task's own record, and fm-watch.sh retires it
+# normally once it confirms the merge. Everything else - the task's custom
+# check, trust record, and publication record, and an already-merged or
+# already-retired PR poll - is removed with the rest of the volatile state;
+# --force removes an unmerged poll too, since it is explicit discard
+# authority.
 # Orca tasks use the same safety checks, then close the recorded terminal and
 # remove the recorded worktree through `orca worktree rm`; teardown never guesses
 # an Orca target from ambient CLI state.
@@ -999,10 +1006,24 @@ validate_pr_poll_cleanup() {
   fi
 }
 
-remove_pr_poll_artifacts() {
-  local state_dir=$1 id=$2
+remove_pr_poll_artifacts() {  # <state-dir> <id> [--force]
+  local state_dir=$1 id=$2 force=${3:-}
   validate_pr_poll_cleanup "$state_dir" "$id" || return 1
   fm_pr_poll_retirement_recover_one "$state_dir" "$id" "$SCRIPT_DIR/fm-pr-poll.sh" || return 1
+  # A ship task is torn down as soon as its PR is open (AGENTS.md section 7),
+  # well before merge, so a still-armed, not-yet-merged poll must outlive this
+  # task's own record for the merge to keep being tracked and reported. Only
+  # --force (explicit discard authority) or an already-retired poll (just
+  # recovered above, and so already gone) may remove it here; fm-watch.sh's
+  # merge detection retires a preserved poll normally once it confirms merged.
+  if [ "$force" != "--force" ] \
+    && fm_pr_poll_artifacts_valid "$state_dir" "$id" "$SCRIPT_DIR/fm-pr-poll.sh"; then
+    fm_pr_poll_release_mark "$state_dir" "$id" \
+      "$FM_PR_DATA_PROVIDER" "$FM_PR_DATA_HOST" "$FM_PR_DATA_PATH" "$FM_PR_DATA_NUMBER" \
+      || { echo "error: could not preserve the still-live PR-merge poll for $id" >&2; return 1; }
+    return 0
+  fi
+  fm_pr_poll_release_marker_remove "$state_dir" "$id" || return 1
   fm_pr_poll_merge_notified_remove "$state_dir" "$id" || return 1
   rm -f "$state_dir/$id.check.sh" "$state_dir/$id.pr-poll" \
     "$state_dir/$id.pr-poll-registration" "$state_dir/$id.pr-poll-retirement" \
@@ -2528,7 +2549,7 @@ cleanup_firstmate_home_children() {
     fi
     remove_grok_turnend_auth "$sub_state" "$child_id" || return 1
     remove_kimi_turnend_auth "$sub_state" "$child_id" || return 1
-    remove_pr_poll_artifacts "$sub_state" "$child_id" || return 1
+    remove_pr_poll_artifacts "$sub_state" "$child_id" --force || return 1
     child_busy_gen=$(meta_value "$child_meta" busy_gen)
     if [ -z "$child_busy_gen" ]; then
       child_busy_gen=$(cat "$sub_state/$child_id.busy-gen" 2>/dev/null || true)
@@ -2869,7 +2890,7 @@ fm_backend_clear_transition "$BACKEND" "$STATE" "$T" || true
 # Remove the per-task temp root (/tmp/fm-<id>/, incl. its gotmp/) recorded by spawn.
 # Read before the state-file rm below; empty (pre-fix tasks without tasktmp=) is a no-op.
 [ -n "$TASK_TMP" ] && rm -rf "$TASK_TMP"
-remove_pr_poll_artifacts "$STATE" "$ID" || exit 1
+remove_pr_poll_artifacts "$STATE" "$ID" "$FORCE" || exit 1
 retire_busy_state "$STATE" "$ID" "$BUSY_GEN" || exit 1
 status_retire_presentation_task "$STATE" "$ID" || exit 1
 rm -f "$STATE/$ID.turn-ended" \

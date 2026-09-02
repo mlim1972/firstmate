@@ -136,6 +136,9 @@ case "${1:-} ${2:-}" in
     ;;
 esac
 case " $* " in
+  *"reviewDecision,headRefOid"*)
+    printf '%s\t%s\n' "${FM_TEST_GH_REVIEW:-}" "${FM_TEST_GH_HEAD:-0123456789abcdef0123456789abcdef01234567}"
+    ;;
   *" headRefOid "*) printf '%s\n' "${FM_TEST_GH_HEAD:-0123456789abcdef0123456789abcdef01234567}" ;;
   *" state "*)
     [ "${FM_TEST_GH_FAIL:-0}" = 0 ] || exit 1
@@ -726,6 +729,55 @@ test_static_poll_contract() {
   pass "static poll is silent except for one merged line and remains watcher-bounded"
 }
 
+# Part 3 of AGENTS.md section 7's PR-open teardown redesign: a "changes
+# requested" review is a distinct, actionable outcome, surfaced the same way a
+# merge is - as a check: wake carrying a different payload word - rather than
+# staying silent until the PR eventually merges.
+test_static_poll_detects_changes_requested_review() {
+  local dir out rc
+  dir=$(make_case poll-review-decision)
+  make_poll_fixture "$dir"
+
+  out=$(FM_TEST_GH_STATE=OPEN run_poll "$dir")
+  [ -z "$out" ] || fail "poll emitted for an open PR with no review yet"
+
+  out=$(FM_TEST_GH_STATE=OPEN FM_TEST_GH_REVIEW=APPROVED run_poll "$dir")
+  [ -z "$out" ] || fail "poll emitted for an approved review"
+
+  out=$(FM_TEST_GH_STATE=OPEN FM_TEST_GH_REVIEW=CHANGES_REQUESTED \
+    FM_TEST_GH_HEAD=abc123def456 run_poll "$dir")
+  [ "$out" = "$(printf 'changes_requested\tabc123def456')" ] \
+    || fail "poll did not surface the requested-changes head: $out"
+
+  # A merge always wins: the second (review) query must never even run once
+  # the PR is already merged, so a merged-but-stale review verdict can never
+  # surface as changes_requested instead of merged.
+  out=$(FM_TEST_GH_STATE=MERGED FM_TEST_GH_REVIEW=CHANGES_REQUESTED run_poll "$dir")
+  [ "$out" = merged ] || fail "a merged PR reported something other than merged: $out"
+
+  dir=$(make_case poll-review-decision-watcher)
+  write_poll_meta "$dir/home/state" task-a https://github.com/o/r/pull/1
+  fm_pr_poll_prepare "$dir/home/state" task-a github https://github.com/o/r/pull/1 github.com o/r 1 "$POLL" \
+    || fail "could not prepare review-decision watcher poll"
+  fm_pr_poll_publish_prepared || fail "could not publish review-decision watcher poll"
+  set +e
+  FM_TEST_GH_STATE=OPEN FM_TEST_GH_REVIEW=CHANGES_REQUESTED FM_TEST_GH_HEAD=abc123def456 \
+    run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/watch.out" 2> "$dir/watch.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "watcher failed on a changes-requested review: $(cat "$dir/watch.err")"
+  case "$(cat "$dir/watch.out")" in
+    check:*task-a.check.sh:*changes_requested*) ;;
+    *) fail "watcher did not turn a changes-requested review into a distinct wake: $(cat "$dir/watch.out")" ;;
+  esac
+  # An unaddressed review verdict must not be torn down like a merge: the poll
+  # stays armed so firstmate keeps tracking it (and can dispatch a follow-up).
+  [ -f "$dir/home/state/task-a.check.sh" ] \
+    || fail "watcher retired the poll on a changes-requested review instead of only on merge"
+
+  pass "the poll surfaces a changes-requested review as a distinct, non-retiring wake"
+}
+
 test_atomic_interruption_leaves_no_partial_artifact() {
   local dir rc
   dir=$(make_case interrupted-write)
@@ -1261,6 +1313,88 @@ SH
   done
 
   pass "teardown removes safe poll artifacts and refuses directory-shaped check files without traversal"
+}
+
+# AGENTS.md section 7: a ship task is torn down as soon as its PR is open, well
+# before merge, so a still-live poll must outlive the task record teardown
+# removes - and must still validate afterward, since fm-watch.sh polls it with
+# no state/<id>.meta left to read.
+test_teardown_preserves_live_unmerged_poll() {
+  local dir fakebin
+  dir=$(make_case teardown-preserves-live-poll)
+  fakebin="$dir/fakebin"
+  fm_write_meta "$dir/home/state/task-a.meta" \
+    'window=firstmate:fm-task-a' \
+    'endpoint_task_id=task-a' \
+    "worktree=$dir/missing-worktree" \
+    "project=$dir/project" \
+    'kind=ship' \
+    'mode=no-mistakes' \
+    'pr=https://github.com/o/r/pull/18'
+  seed_canonical_poll "$dir" task-a https://github.com/o/r/pull/18
+  cat > "$fakebin/tmux" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+  chmod +x "$fakebin/tmux"
+  touch "$dir/home/state/.last-watcher-beat"
+
+  FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" PATH="$fakebin:$BASE_PATH" \
+    "$TEARDOWN" task-a > "$dir/teardown.out" 2> "$dir/teardown.err" \
+    || fail "teardown of an open, unmerged PR failed: $(cat "$dir/teardown.err")"
+  [ ! -e "$dir/home/state/task-a.meta" ] || fail "teardown left task metadata behind"
+  [ -f "$dir/home/state/task-a.check.sh" ] || fail "teardown deleted the still-live merge poll"
+  [ -f "$dir/home/state/task-a.pr-poll" ] || fail "teardown deleted the poll sidecar"
+  [ -f "$dir/home/state/task-a.pr-poll-registration" ] || fail "teardown deleted the poll registration"
+  [ "$(cat "$dir/home/state/task-a.pr-poll-released")" = "fm-pr-poll-released-v1
+github
+github.com
+o/r
+18" ] || fail "release marker was missing or did not bind the exact PR identity"
+  fm_pr_poll_artifacts_valid "$dir/home/state" task-a "$POLL" \
+    || fail "preserved poll no longer validates once its task record is gone"
+
+  rm -f "$dir/home/state/.last-check"
+  FM_TEST_GH_STATE=MERGED run_watcher_bounded "$dir/home" "$fakebin" \
+    > "$dir/watch.out" 2> "$dir/watch.err" \
+    || fail "watcher could not poll a poll preserved past its own task's teardown"
+  case "$(cat "$dir/watch.out")" in check:*task-a.check.sh:*merged) ;; \
+    *) fail "preserved poll did not still report its eventual merge" ;; esac
+  assert_poll_absent "$dir/home/state" task-a
+  [ ! -e "$dir/home/state/task-a.pr-poll-released" ] \
+    || fail "merge retirement left the release marker behind"
+
+  pass "teardown preserves a still-live unmerged poll and its later merge is still tracked"
+}
+
+test_teardown_force_discards_live_unmerged_poll() {
+  local dir fakebin
+  dir=$(make_case teardown-force-discards-live-poll)
+  fakebin="$dir/fakebin"
+  fm_write_meta "$dir/home/state/task-a.meta" \
+    'window=firstmate:fm-task-a' \
+    'endpoint_task_id=task-a' \
+    "worktree=$dir/missing-worktree" \
+    "project=$dir/project" \
+    'kind=ship' \
+    'mode=no-mistakes' \
+    'pr=https://github.com/o/r/pull/18'
+  seed_canonical_poll "$dir" task-a https://github.com/o/r/pull/18
+  cat > "$fakebin/tmux" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+  chmod +x "$fakebin/tmux"
+  touch "$dir/home/state/.last-watcher-beat"
+
+  FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" PATH="$fakebin:$BASE_PATH" \
+    "$TEARDOWN" task-a --force > "$dir/teardown.out" 2> "$dir/teardown.err" \
+    || fail "forced teardown of an open, unmerged PR failed: $(cat "$dir/teardown.err")"
+  assert_poll_absent "$dir/home/state" task-a
+  [ ! -e "$dir/home/state/task-a.pr-poll-released" ] \
+    || fail "explicit discard authority still left the still-live poll marked for preservation"
+
+  pass "--force still discards a still-live unmerged poll (explicit discard authority)"
 }
 
 # The GitLab watch must follow a merge request exactly as the GitHub watch
@@ -2129,6 +2263,7 @@ test_invalid_entrypoints_have_zero_side_effects
 test_valid_recording_and_merge_derivation
 test_rejected_metacharacter_bytes_are_inert
 test_static_poll_contract
+test_static_poll_detects_changes_requested_review
 test_atomic_interruption_leaves_no_partial_artifact
 test_concurrent_watcher_sees_only_complete_publication
 test_poll_publication_refuses_unsafe_destinations
@@ -2138,3 +2273,5 @@ test_bootstrap_leaves_unauthenticated_checks
 test_custom_snapshot_cleanup_on_signal
 test_returned_custom_check_descendants_are_drained
 test_teardown_removes_poll_artifacts
+test_teardown_preserves_live_unmerged_poll
+test_teardown_force_discards_live_unmerged_poll
