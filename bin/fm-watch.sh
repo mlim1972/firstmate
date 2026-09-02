@@ -1580,6 +1580,9 @@ while :; do
       fi
       if [ -n "$out" ]; then
         reason="check: $c: $out"
+        # A PR poll's other possible output, changes_requested (bin/fm-pr-poll.sh),
+        # only ever retires the poll on a genuine merged transition above, so it
+        # falls straight through to the generic wake below like any other check.
         if [ "$is_pr_poll" -eq 1 ] && [ "$out" = merged ]; then
           merge_outcome_rc=0
           fm_merge_outcome_report "$FM_HOME" "$STATE" "$id" "$url" poll \
