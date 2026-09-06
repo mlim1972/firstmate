@@ -129,13 +129,20 @@ fm_backend_orca_repo_ensure() {  # <project-path>
 }
 
 fm_backend_orca_worktree_create() {  # <project-path> <name>
-  local project=$1 name=$2 repo_id out wt_id wt_path terminal
+  local project=$1 name=$2 repo_id out wt_id wt_id_raw wt_id_path wt_path terminal
   repo_id=$(fm_backend_orca_repo_ensure "$project") || return 1
   out=$(orca worktree create --repo "id:$repo_id" --name "$name" --no-parent --setup skip --json) || return 1
-  wt_id=$(printf '%s' "$out" | fm_backend_orca_json_get worktree-id) || {
+  wt_id_raw=$(printf '%s' "$out" | fm_backend_orca_json_get worktree-id) || {
     echo "error: orca worktree create did not return a worktree id for $name" >&2
     return 1
   }
+  # Some installed orca CLI versions return a compound "<uuid>::<path>" in the
+  # worktree-id field instead of a bare id; every other caller of this id
+  # (removal, terminal create, endpoint validation) expects a bare id.
+  case "$wt_id_raw" in
+    *::*) wt_id=${wt_id_raw%%::*}; wt_id_path=${wt_id_raw#*::} ;;
+    *) wt_id=$wt_id_raw; wt_id_path= ;;
+  esac
   terminal=$(printf '%s' "$out" | fm_backend_orca_json_get worktree-terminal-handle 2>/dev/null || true)
   wt_path=$(printf '%s' "$out" | fm_backend_orca_json_get worktree-path) || {
     echo "error: orca worktree create did not return a path for $name" >&2
@@ -150,6 +157,10 @@ fm_backend_orca_worktree_create() {  # <project-path> <name>
     fi
     return 2
   }
+  if [ -n "$wt_id_path" ] && [ "$wt_id_path" != "$wt_path" ]; then
+    echo "error: orca worktree create returned a compound worktree id ($wt_id_raw) whose embedded path does not match the reported worktree path ($wt_path) for $name" >&2
+    return 1
+  fi
   printf '%s\t%s' "$wt_id" "$wt_path"
   [ -z "$terminal" ] || printf '\t%s' "$terminal"
 }

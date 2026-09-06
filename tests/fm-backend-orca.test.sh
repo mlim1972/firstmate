@@ -452,6 +452,36 @@ test_worktree_and_terminal_helpers_parse_json() {
   pass "Orca lifecycle helpers: register repo, create worktree, create terminal, parse stable ids"
 }
 
+test_worktree_create_splits_compound_worktree_id() {
+  local out wt_id wt_path
+  orca_case compound-worktree-id
+  printf '1\n' > "$RESP/1.exit"
+  printf '{"ok":true,"result":{"repo":{"id":"repo-compound"}}}\n' > "$RESP/2.out"
+  printf '{"ok":true,"result":{"worktree":{"id":"8a7174cd-e0e5-4d18-9002-83dcbc21e241::/tmp/orca-wt","path":"/tmp/orca-wt"}}}\n' > "$RESP/3.out"
+  out=$( PATH="$FB:$PATH" FM_ORCA_LOG="$LOG" FM_ORCA_RESPONSES="$RESP" \
+    bash -c '. "$0/bin/backends/orca.sh"; fm_backend_orca_worktree_create /repo/path fm-task' "$ROOT" )
+  wt_id=${out%%$'\t'*}
+  wt_path=${out#*$'\t'}
+  [ "$wt_id" = 8a7174cd-e0e5-4d18-9002-83dcbc21e241 ] || fail "worktree helper should strip the compound id down to the bare uuid, got '$wt_id'"
+  [ "$wt_path" = /tmp/orca-wt ] || fail "worktree helper should still print worktree path, got '$wt_path'"
+  pass "fm_backend_orca_worktree_create: splits a compound <uuid>::<path> worktree-id into a bare id"
+}
+
+test_worktree_create_refuses_compound_worktree_id_path_mismatch() {
+  local out status
+  orca_case compound-worktree-id-mismatch
+  printf '1\n' > "$RESP/1.exit"
+  printf '{"ok":true,"result":{"repo":{"id":"repo-compound-mismatch"}}}\n' > "$RESP/2.out"
+  printf '{"ok":true,"result":{"worktree":{"id":"8a7174cd-e0e5-4d18-9002-83dcbc21e241::/tmp/other-wt","path":"/tmp/orca-wt"}}}\n' > "$RESP/3.out"
+  out=$( PATH="$FB:$PATH" FM_ORCA_LOG="$LOG" FM_ORCA_RESPONSES="$RESP" \
+    bash -c '. "$0/bin/backends/orca.sh"; fm_backend_orca_worktree_create /repo/path fm-task' "$ROOT" 2>&1 )
+  status=$?
+  [ "$status" -ne 0 ] || fail "worktree helper should refuse a compound id whose embedded path disagrees with worktree-path"
+  assert_contains "$out" "embedded path does not match the reported worktree path" \
+    "worktree helper did not explain the compound id/path mismatch"
+  pass "fm_backend_orca_worktree_create: stops rather than guessing on a compound id/path mismatch"
+}
+
 test_worktree_create_removes_worktree_when_path_missing() {
   local out status
   orca_case lifecycle-missing-path
@@ -1348,6 +1378,8 @@ test_worktree_path_resolves_id
 test_dispatcher_sources_orca_and_routes_primitives
 test_json_get_ignores_undocumented_terminal_id_shapes
 test_worktree_and_terminal_helpers_parse_json
+test_worktree_create_splits_compound_worktree_id
+test_worktree_create_refuses_compound_worktree_id_path_mismatch
 test_worktree_create_removes_worktree_when_path_missing
 test_spawn_preserves_orca_metadata_when_pathless_worktree_cleanup_fails
 test_spawn_writes_orca_metadata_and_launches_harness
