@@ -472,13 +472,17 @@ test_worktree_create_refuses_compound_worktree_id_path_mismatch() {
   orca_case compound-worktree-id-mismatch
   printf '1\n' > "$RESP/1.exit"
   printf '{"ok":true,"result":{"repo":{"id":"repo-compound-mismatch"}}}\n' > "$RESP/2.out"
-  printf '{"ok":true,"result":{"worktree":{"id":"8a7174cd-e0e5-4d18-9002-83dcbc21e241::/tmp/other-wt","path":"/tmp/orca-wt"}}}\n' > "$RESP/3.out"
+  printf '{"ok":true,"result":{"worktree":{"id":"8a7174cd-e0e5-4d18-9002-83dcbc21e241::/tmp/other-wt","path":"/tmp/orca-wt"},"terminal":{"handle":"term-compound-mismatch"}}}\n' > "$RESP/3.out"
   out=$( PATH="$FB:$PATH" FM_ORCA_LOG="$LOG" FM_ORCA_RESPONSES="$RESP" \
     bash -c '. "$0/bin/backends/orca.sh"; fm_backend_orca_worktree_create /repo/path fm-task' "$ROOT" 2>&1 )
   status=$?
   [ "$status" -ne 0 ] || fail "worktree helper should refuse a compound id whose embedded path disagrees with worktree-path"
   assert_contains "$out" "embedded path does not match the reported worktree path" \
     "worktree helper did not explain the compound id/path mismatch"
+  assert_contains "$(cat "$LOG")" $'orca\x1f''terminal'$'\x1f''close'$'\x1f''--terminal'$'\x1f''term-compound-mismatch'$'\x1f''--json' \
+    "worktree helper did not close the implicit terminal on a compound id/path mismatch"
+  assert_contains "$(cat "$LOG")" $'orca\x1f''worktree'$'\x1f''rm'$'\x1f''--worktree'$'\x1f''id:8a7174cd-e0e5-4d18-9002-83dcbc21e241'$'\x1f''--force'$'\x1f''--json' \
+    "worktree helper did not remove the Orca worktree on a compound id/path mismatch"
   pass "fm_backend_orca_worktree_create: stops rather than guessing on a compound id/path mismatch"
 }
 
