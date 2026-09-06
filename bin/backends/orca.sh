@@ -160,8 +160,15 @@ fm_backend_orca_worktree_create() {  # <project-path> <name>
   if [ -n "$wt_id_path" ] && [ "$wt_id_path" != "$wt_path" ]; then
     echo "error: orca worktree create returned a compound worktree id ($wt_id_raw) whose embedded path does not match the reported worktree path ($wt_path) for $name" >&2
     [ -z "$terminal" ] || fm_backend_orca_kill "$terminal" >/dev/null 2>&1 || true
-    fm_backend_orca_remove_worktree "$wt_id" >/dev/null 2>&1 || true
-    return 1
+    if fm_backend_orca_remove_worktree "$wt_id" >/dev/null; then
+      return 1
+    fi
+    if [ -n "$terminal" ]; then
+      printf '%s\t\t%s' "$wt_id" "$terminal"
+    else
+      printf '%s\t' "$wt_id"
+    fi
+    return 2
   fi
   printf '%s\t%s' "$wt_id" "$wt_path"
   [ -z "$terminal" ] || printf '\t%s' "$terminal"
