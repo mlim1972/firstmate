@@ -259,6 +259,82 @@ Validated backlog tasks are picked up by the normal dispatch loop:
 
 ---
 
+## Issue Creation: From Brainstorm to darkf-todo
+
+Before the overnight pipeline can run, you need structured issues. Two skills bridge the gap:
+
+### 1. Single Issue: `darkf-issue-from-session` (Lightweight)
+
+For one-off features after a brainstorming/grill session:
+
+```bash
+# Quick template editor
+cat > /tmp/darkf-issue.md <<'EOF'
+### Problem
+
+
+### Impact
+
+
+### Proposed Solution
+
+
+### Acceptance Criteria
+
+EOF
+$EDITOR /tmp/darkf-issue.md
+gh issue create --repo owner/repo --label darkf-todo --title "[darkf] Your Title" --body-file /tmp/darkf-issue.md
+```
+
+**Future skill** (not yet implemented): `/darkf-issue-from-session --from-brainstorming --repo owner/repo` — auto-fills template from session notes, shows Lavish preview, creates issue.
+
+### 2. Multi-Phase Feature: `darkf-feature-breakdown` (Scaffolded)
+
+For large features needing phased execution with dependencies:
+
+```bash
+# From a plan/spec doc (markdown with ## Phase N headings)
+bin/fm-darkf-breakdown.sh --plan SPEC.md --repo owner/repo
+
+# Interactive (no prior doc)
+bin/fm-darkf-breakdown.sh --interactive --repo owner/repo
+
+# Dry run to preview
+bin/fm-darkf-breakdown.sh --plan SPEC.md --repo owner/repo --dry-run
+```
+
+**Creates:**
+- **Epic issue** labeled `darkf-epic` (tracks overall feature)
+- **Sub-issues** labeled `darkf-todo,phase:N` with `depends-on` links
+- Each sub-issue has the 4-section template pre-filled
+
+**Dark-factory behavior with phases:**
+1. Only **Phase 1** gets `darkf-todo` initially → picked up hourly
+2. When Phase 1 PR merges → auto-promotes Phase 2 (if `AUTO_ADVANCE_PHASES=true` in `config/darkf-schedule`)
+3. Subsequent phases execute sequentially overnight
+
+**Plan doc format (markdown):**
+```markdown
+# Feature: User Authentication System
+
+## Phase 1: MFA Core Implementation
+### Problem
+...
+### Impact
+...
+### Proposed Solution
+...
+### Acceptance Criteria
+...
+
+## Phase 2: Recovery Codes & Backup
+### Problem
+...
+...
+```
+
+---
+
 ## Quick Start (Pilot Tonight)
 
 ### 1. Add Issue Template to a Test Project
@@ -419,17 +495,21 @@ inside the worktree for iterative refinement before PR creation.
 
 ```
 firstmate/
-├── .agents/skills/darkf-intake/
-│   └── SKILL.md                 # Skill documentation
+├── .agents/skills/
+│   ├── darkf-intake/
+│   │   └── SKILL.md                 # Intake validation skill
+│   └── darkf-feature-breakdown/
+│       └── SKILL.md                 # Feature breakdown skill (epic + phases)
 ├── bin/
 │   ├── fm-darkf-intake.sh       # Validates issue, creates backlog task
-│   └── fm-darkf-trigger.sh      # Cron trigger (checks schedule, fm-sends)
+│   ├── fm-darkf-trigger.sh      # Cron trigger (checks schedule, fm-sends)
+│   └── fm-darkf-breakdown.sh    # Decomposes plan into epic + phased sub-issues
 ├── config/
-│   ├── darkf-schedule           # START_HOUR/END_HOUR (UTC)
+│   ├── darkf-schedule           # START_HOUR/END_HOUR (UTC), AUTO_ADVANCE_PHASES
 │   └── crew-dispatch.json       # Dispatch profile for intake work
 ├── data/
 │   └── df-night-shift/
-│       └── brief.md             # Secondmate charter
+│       └── brief.md             # Secondmate charter (time-gated)
 ├── docs/
 │   └── dark-factory.md          # This file
 └── projects/                    # Cloned repos (registered in data/projects.md)
