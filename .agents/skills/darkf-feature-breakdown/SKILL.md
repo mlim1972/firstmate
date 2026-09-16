@@ -96,18 +96,28 @@ done
 
 **Intake script (`fm-darkf-intake.sh`)** behavior with phases:
 
-1. **Scans** for `darkf-todo` issues
-2. **Groups** by parent epic (via `darkf-epic` label + sub-issue relationship)
-3. **Sorts** by `phase:N` label
-4. **Only processes Phase 1** initially (creates backlog task)
-5. **On Phase 1 PR merge** → auto-promotes Phase 2:
-   - Removes `darkf-todo` from Phase 1 (now `darkf-done`)
-   - Adds `darkf-todo` to Phase 2
-   - Next hourly scan picks up Phase 2
+1. **Fetches** each `darkf-todo` issue individually (triggered hourly)
+2. **Detects parent epic** via GitHub sub-issue relationship (GraphQL)
+3. **Phase gating**:
+   - **Phase 1** (`phase:1`): always processed immediately
+   - **Phase N>1**: only processed if prior phase is complete
+     - Prior phase has `darkf-done` label, OR
+     - Prior phase PR is merged (checked via timeline)
+   - **Standalone issues** (no parent epic): processed normally
+4. **On validation pass** → creates backlog task, adds `darkf-wip` label
 
-**Config** (optional, in `config/darkf-schedule`):
+**Phase promotion script (`fm-darkf-phase-promote.sh`)** — called from merge flow:
+
+1. Triggered when main firstmate detects PR merge (via merge poll)
+2. Reads `AUTO_ADVANCE_PHASES` from `config/darkf-schedule`
+3. If `true`: finds next phase sub-issue, adds `darkf-todo`, marks prior phase `darkf-done`
+4. Next hourly intake scan picks up promoted phase
+
+**Config** (`config/darkf-schedule`):
 ```ini
-AUTO_ADVANCE_PHASES=true  # default false; enable after pilot
+START_HOUR=0
+END_HOUR=6
+AUTO_ADVANCE_PHASES=false  # default false; enable after pilot confirms pipeline
 ```
 
 ## Commands
