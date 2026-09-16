@@ -24,9 +24,20 @@ END_HOUR=${END_HOUR:-6}
 CURRENT_HOUR=$(date -u +%H | sed 's/^0*//')
 CURRENT_HOUR=${CURRENT_HOUR:-0}
 
-if [ "$CURRENT_HOUR" -lt "$START_HOUR" ] || [ "$CURRENT_HOUR" -ge "$END_HOUR" ]; then
-  echo "outside sleep window (UTC hour $CURRENT_HOUR not in [$START_HOUR, $END_HOUR))"
-  exit 0
+# Handle midnight crossover (e.g., START_HOUR=22, END_HOUR=7)
+if [ "$START_HOUR" -lt "$END_HOUR" ]; then
+  # Same-day window: outside if hour < start OR hour >= end
+  if [ "$CURRENT_HOUR" -lt "$START_HOUR" ] || [ "$CURRENT_HOUR" -ge "$END_HOUR" ]; then
+    echo "outside sleep window (UTC hour $CURRENT_HOUR not in [$START_HOUR, $END_HOUR))"
+    exit 0
+  fi
+else
+  # Overnight window (crosses midnight): outside if hour < start AND hour >= end
+  # i.e., hour is in the gap between END_HOUR and START_HOUR
+  if [ "$CURRENT_HOUR" -lt "$START_HOUR" ] && [ "$CURRENT_HOUR" -ge "$END_HOUR" ]; then
+    echo "outside sleep window (UTC hour $CURRENT_HOUR not in [$START_HOUR, $END_HOUR) overnight)"
+    exit 0
+  fi
 fi
 
 # Send trigger to secondmate via fm-send
