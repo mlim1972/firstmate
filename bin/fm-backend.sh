@@ -388,6 +388,18 @@ fm_backend_endpoint_atom_valid() {  # <value>
   esac
 }
 
+# Orca worktree_id uses the format uuid::path (e.g., 8a7174cd-e0e5-4d18-9002-83dcbc21e241::/Users/mlim/orca/workspaces/brainiac/fm-xxx)
+# which contains : and / characters not allowed by the generic atom validator.
+# This validator accepts the Orca worktree_id format: non-empty, no control chars.
+# The uuid::path structure is validated by Orca itself; we only ensure it's
+# a plausible non-empty string without newlines/tabs/carriage returns.
+# shellcheck disable=SC2317  # only called from orca branch above
+fm_backend_orca_worktree_id_valid() {  # <value>
+  case "$1" in
+    ''|*$'\n'*|*$'\r'*|*$'\t'*) return 1 ;;
+  esac
+}
+
 fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
   local meta=$1 id=$2 backend_count backend window worktree project binding_count binding
   local session pane recorded_session workspace tab terminal worktree_id surface
@@ -508,7 +520,7 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
       }
       if [ "$window" != "fm-$id" ] \
         || ! fm_backend_endpoint_atom_valid "$terminal" \
-        || ! fm_backend_endpoint_atom_valid "$worktree_id"; then
+        || ! fm_backend_orca_worktree_id_valid "$worktree_id"; then
         echo "REFUSED: Orca endpoint metadata for task $id is malformed or inconsistent; preserving task state." >&2
         return 1
       fi
