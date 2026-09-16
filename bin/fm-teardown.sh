@@ -2122,10 +2122,18 @@ EOF
 
 require_orca_worktree_path_match() {
   local worktree_id=$1 inspected=$2 resolved inspected_abs resolved_abs
-  resolved=$(fm_backend_worktree_path orca "$worktree_id") || {
+  resolved=$(fm_backend_worktree_path orca "$worktree_id" 2>&1) || {
+    # Idempotent: if Orca worktree already gone (selector_not_found), treat as success
+    if printf '%s' "$resolved" | grep -q 'selector_not_found'; then
+      return 0
+    fi
     echo "REFUSED: cannot resolve Orca worktree id $worktree_id to a path; preserving metadata." >&2
     return 1
   }
+  # If resolved is empty, Orca worktree is already gone (idempotent success)
+  if [ -z "$resolved" ]; then
+    return 0
+  fi
   inspected_abs=$(canonical_existing_dir "$inspected") || {
     echo "REFUSED: cannot canonicalize inspected worktree ${inspected:-<missing>}; preserving metadata." >&2
     return 1
