@@ -181,29 +181,14 @@ fm_backend_orca_remove_worktree() {  # <worktree-id>
   local worktree_id=${1:-}
   [ -n "$worktree_id" ] || { echo "error: missing Orca worktree id; cannot remove worktree" >&2; return 1; }
   fm_backend_orca_tool_check || return 1
-  local out
-  out=$(orca worktree rm --worktree "id:$worktree_id" --force --json 2>&1) || {
-    # Idempotent: if worktree already gone (selector_not_found), treat as success
-    if printf '%s' "$out" | grep -q 'selector_not_found'; then
-      return 0
-    fi
-    printf '%s\n' "$out" >&2
-    return 1
-  }
+  fm_backend_orca_run_json orca worktree rm --worktree "id:$worktree_id" --force --json
 }
 
 fm_backend_orca_worktree_path() {
   local worktree_id=${1:-} out path
   [ -n "$worktree_id" ] || { echo "error: missing Orca worktree id; cannot resolve worktree path" >&2; return 1; }
   fm_backend_orca_tool_check || return 1
-  out=$(orca worktree show --worktree "id:$worktree_id" --json 2>&1) || {
-    # Idempotent: if worktree already gone (selector_not_found), return empty success
-    if printf '%s' "$out" | grep -q 'selector_not_found'; then
-      return 0
-    fi
-    printf '%s\n' "$out" >&2
-    return 1
-  }
+  out=$(orca worktree show --worktree "id:$worktree_id" --json) || return 1
   path=$(printf '%s' "$out" | fm_backend_orca_json_get worktree-path) || {
     echo "error: orca worktree show did not return a path for $worktree_id" >&2
     return 1
