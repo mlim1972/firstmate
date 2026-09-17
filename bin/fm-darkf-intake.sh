@@ -137,8 +137,9 @@ fi
 SUBISSUES=$(gh-axi issue subissue list "$NUMBER" -R "$REPO_FULL" 2>/dev/null \
   | sed -n 's/^[[:space:]]*\([0-9][0-9]*\),.*/\1/p' || true)
 if [ -n "$SUBISSUES" ]; then
-  # set of all darkf-todo-tagged open issue numbers in this repo (any assignee)
-  DARKF_SET=$(gh-axi issue list -R "$REPO_FULL" --state open --label darkf-todo --fields number --limit 100 2>/dev/null \
+  # set of all darkf-todo-tagged open issue numbers in this repo (any assignee);
+  # number is gh-axi's default first column, so no --fields flag is needed.
+  DARKF_SET=$(gh-axi issue list -R "$REPO_FULL" --state open --label darkf-todo --limit 100 2>/dev/null \
     | sed -n 's/^[[:space:]]*\([0-9][0-9]*\),.*/\1/p' || true)
   MISSING_DEP=""
   while IFS= read -r dep; do
@@ -226,11 +227,11 @@ if [ "${DRY_RUN:-0}" = "1" ]; then
   exit 0
 fi
 
-TASK_JSON=$("$TASKS" add "$TASK_TITLE" --kind ship --repo "$PROJECT_NAME" --json 2>/dev/null) || {
+TASK_JSON=$("$TASKS" add "$TASK_TITLE" --mint --kind ship --repo "$PROJECT_NAME" --json 2>/dev/null) || {
   echo "error: failed to create backlog task" >&2
   exit 2
 }
-TASK_ID=$(printf '%s' "$TASK_JSON" | sed -n 's/^[[:space:]]*id:[[:space:]]*//p' | head -1 | tr -d '"')
+TASK_ID=$(printf '%s' "$TASK_JSON" | jq -r '.task.id // empty' 2>/dev/null || true)
 if [ -z "$TASK_ID" ]; then
   echo "error: could not read task id from tasks-axi output" >&2
   exit 2
