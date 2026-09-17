@@ -1,0 +1,92 @@
+diff --git a/bin/backends/orca.sh b/bin/backends/orca.sh
+index 4489f59..422a732 100644
+--- a/bin/backends/orca.sh
++++ b/bin/backends/orca.sh
+@@ -181,29 +181,14 @@ fm_backend_orca_remove_worktree() {  # <worktree-id>
+   local worktree_id=${1:-}
+   [ -n "$worktree_id" ] || { echo "error: missing Orca worktree id; cannot remove worktree" >&2; return 1; }
+   fm_backend_orca_tool_check || return 1
+-  local out
+-  out=$(orca worktree rm --worktree "id:$worktree_id" --force --json 2>&1) || {
+-    # Idempotent: if worktree already gone (selector_not_found), treat as success
+-    if printf '%s' "$out" | grep -q 'selector_not_found'; then
+-      return 0
+-    fi
+-    printf '%s\n' "$out" >&2
+-    return 1
+-  }
++  fm_backend_orca_run_json orca worktree rm --worktree "id:$worktree_id" --force --json
+ }
+ 
+ fm_backend_orca_worktree_path() {
+   local worktree_id=${1:-} out path
+   [ -n "$worktree_id" ] || { echo "error: missing Orca worktree id; cannot resolve worktree path" >&2; return 1; }
+   fm_backend_orca_tool_check || return 1
+-  out=$(orca worktree show --worktree "id:$worktree_id" --json 2>&1) || {
+-    # Idempotent: if worktree already gone (selector_not_found), return empty success
+-    if printf '%s' "$out" | grep -q 'selector_not_found'; then
+-      return 0
+-    fi
+-    printf '%s\n' "$out" >&2
+-    return 1
+-  }
++  out=$(orca worktree show --worktree "id:$worktree_id" --json) || return 1
+   path=$(printf '%s' "$out" | fm_backend_orca_json_get worktree-path) || {
+     echo "error: orca worktree show did not return a path for $worktree_id" >&2
+     return 1
+diff --git a/bin/fm-backend.sh b/bin/fm-backend.sh
+index 2143682..bd41f1f 100644
+--- a/bin/fm-backend.sh
++++ b/bin/fm-backend.sh
+@@ -388,18 +388,6 @@ fm_backend_endpoint_atom_valid() {  # <value>
+   esac
+ }
+ 
+-# Orca worktree_id uses the format uuid::path (e.g., 8a7174cd-e0e5-4d18-9002-83dcbc21e241::/Users/mlim/orca/workspaces/brainiac/fm-xxx)
+-# which contains : and / characters not allowed by the generic atom validator.
+-# This validator accepts the Orca worktree_id format: non-empty, no control chars.
+-# The uuid::path structure is validated by Orca itself; we only ensure it's
+-# a plausible non-empty string without newlines/tabs/carriage returns.
+-# shellcheck disable=SC2317  # only called from orca branch above
+-fm_backend_orca_worktree_id_valid() {  # <value>
+-  case "$1" in
+-    ''|*$'\n'*|*$'\r'*|*$'\t'*) return 1 ;;
+-  esac
+-}
+-
+ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
+   local meta=$1 id=$2 backend_count backend window worktree project binding_count binding
+   local session pane recorded_session workspace tab terminal worktree_id surface
+@@ -520,7 +508,7 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
+       }
+       if [ "$window" != "fm-$id" ] \
+         || ! fm_backend_endpoint_atom_valid "$terminal" \
+-        || ! fm_backend_orca_worktree_id_valid "$worktree_id"; then
++        || ! fm_backend_endpoint_atom_valid "$worktree_id"; then
+         echo "REFUSED: Orca endpoint metadata for task $id is malformed or inconsistent; preserving task state." >&2
+         return 1
+       fi
+diff --git a/bin/fm-teardown.sh b/bin/fm-teardown.sh
+index 7a2c521..1c94623 100755
+--- a/bin/fm-teardown.sh
++++ b/bin/fm-teardown.sh
+@@ -2066,18 +2066,10 @@ EOF
+ 
+ require_orca_worktree_path_match() {
+   local worktree_id=$1 inspected=$2 resolved inspected_abs resolved_abs
+-  resolved=$(fm_backend_worktree_path orca "$worktree_id" 2>&1) || {
+-    # Idempotent: if Orca worktree already gone (selector_not_found), treat as success
+-    if printf '%s' "$resolved" | grep -q 'selector_not_found'; then
+-      return 0
+-    fi
++  resolved=$(fm_backend_worktree_path orca "$worktree_id") || {
+     echo "REFUSED: cannot resolve Orca worktree id $worktree_id to a path; preserving metadata." >&2
+     return 1
+   }
+-  # If resolved is empty, Orca worktree is already gone (idempotent success)
+-  if [ -z "$resolved" ]; then
+-    return 0
+-  fi
+   inspected_abs=$(canonical_existing_dir "$inspected") || {
+     echo "REFUSED: cannot canonicalize inspected worktree ${inspected:-<missing>}; preserving metadata." >&2
+     return 1
