@@ -237,6 +237,7 @@ if [ -z "$TASK_ID" ]; then
   exit 2
 fi
 
+mkdir -p "$FM_ROOT/state"
 {
   echo "darkf_issue=$ISSUE_URL"
   echo "darkf_number=$NUMBER"

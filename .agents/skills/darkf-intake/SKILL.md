@@ -43,7 +43,9 @@ Headers are matched by regex: `/^###\s*(problem|impact|proposed[- ]?solution|acc
 
 ```bash
 # 1. Fetch issue (gh-axi)
-gh-axi issue view <issue-url> --json body,comments,labels,number,title
+gh-axi api "/repos/<owner>/<repo>/issues/<number>" --full   # title, state, body
+gh-axi api "/repos/<owner>/<repo>/issues/<number>"          # labels, assignees
+gh-axi api "/repos/<owner>/<repo>/issues/<number>/comments" --full
 
 # 2. Concatenate body + all comment bodies
 # 3. Scan for four required headers

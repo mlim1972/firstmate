@@ -209,7 +209,10 @@ main() {
   echo "Ensuring dark-factory labels in $REPO..."
   for spec in "darkf-epic:a2eeef" "darkf-todo:1d76db" "darkf-wip:1d76db" "darkf-failed:d73a4a"; do
     name="${spec%%:*}"; color="${spec##*:}"
-    gh-axi label create -R "$REPO" --name "$name" --color "$color" --description "Dark-factory:$name" >/dev/null 2>&1 || echo "  warn: could not ensure label $name"
+    label_out=$(gh-axi label create -R "$REPO" --name "$name" --color "$color" --description "Dark-factory:$name" 2>&1)
+    if [ $? -ne 0 ] && ! printf '%s' "$label_out" | grep -qi "already_exists\|already exists"; then
+      echo "  warn: could not ensure label $name"
+    fi
   done
   for num in "${phase_nums[@]}"; do
     gh-axi label create -R "$REPO" --name "phase:$num" --color 5319e7 --description "Dark-factory phase (display only; ordering is the parent's sub-issue list)" >/dev/null 2>&1 || true

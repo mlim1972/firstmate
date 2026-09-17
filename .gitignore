@@ -13,6 +13,3 @@ __pycache__/
 config/
 
 .tools/
-
-# Serena MCP tool-local config (accidentally committed once as b619903; never tracked)
-.serena/
