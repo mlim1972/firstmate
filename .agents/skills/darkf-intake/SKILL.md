@@ -10,8 +10,14 @@ Intake validation skill for the dark-factory pipeline. Ports the intake gate fro
 ## When to Load
 
 - A GitHub issue labeled `darkf-todo` appears in a project registered in `data/projects.md`
-- The dark-factory secondmate's charter triggers intake processing
+- The `darkfactory` skill (the captain-invoked entry point) dispatches intake for a scanned issue
 - Captain invokes `/darkf-intake <issue-url>` for manual validation
+
+## Reference
+
+The `darkfactory` skill is the operational entry point: it scans projects, runs
+this intake on each candidate issue, and dispatches ships serially. This skill
+documents the intake template and gate semantics only.
 
 ## Contract
 
@@ -52,10 +58,12 @@ gh-axi issue view <issue-url> --json body,comments,labels,number,title
 
 ## Integration Points
 
-- **Secondmate charter** `dark-factory` routes work to this skill
-- **Dispatch profile** in `config/crew-dispatch.json` matches scope `darkf-todo` → harness `pi`, effort `xhigh`
-- **Project posture** from `data/projects.md` resolves delivery mode (`no-mistakes-prod-only` → `no-mistakes` or `direct-PR`)
-- **Merge authority** stays with captain (`yolo: off` by default)
+- The `darkfactory` skill routes scanned candidate issues through this intake
+- Assignee and dependency gates are enforced in `bin/fm-darkf-intake.sh`, not here
+- The assignee gate STOPS (exit 5) when a child is not assigned to the operator, so
+  the serial chain halts rather than skipping forward; the dependency gate skips
+- Project posture from `data/projects.md` resolves delivery mode at dispatch
+- Merge authority stays with the captain (`yolo: off` by default)
 
 ## Error Handling
 
@@ -66,7 +74,7 @@ gh-axi issue view <issue-url> --json body,comments,labels,number,title
 
 ## Files Created
 
-- `bin/fm-darkf-intake.sh` — executable entry point (called by secondmate charter)
+- `bin/fm-darkf-intake.sh` — executable intake gate (gh-axi, with `DRY_RUN`)
 - This skill document
 
 ## Testing

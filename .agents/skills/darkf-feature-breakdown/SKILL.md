@@ -1,149 +1,106 @@
 ---
 name: darkf-feature-breakdown
-description: Decompose a feature plan/spec into a GitHub epic with phased sub-issues labeled for dark-factory processing. Use after brainstorming/grill/lavish sessions when you have a plan doc and want to create structured, dependent issues for overnight dark-factory execution.
+description: Decompose a feature plan/spec into a GitHub epic with phased sub-issues labeled for dark-factory processing, OR break it down inline from conversation. Use after brainstorming/grill/lavish sessions when you have a plan doc and want to create structured, dependent issues for overnight dark-factory execution.
 ---
 
 # darkf-feature-breakdown
 
 Transforms a feature specification into a GitHub issue hierarchy:
-- **Parent epic** (labeled `darkf-epic`) — tracks overall feature
-- **Sub-issues** (labeled `darkf-todo,phase:N`) — each phase runs independently in dark-factory
+- **Parent epic** (labeled `darkf-epic`) — carries the full functionality and the
+  ordered phase list. It is the source of truth.
+- **Child sub-issues** (labeled `darkf-todo`, `phase:N`) — the work units, each
+  dispatched as one ship in order.
+
+This is the **create** front end of the dark-factory pipeline (chapter 1 of
+`docs/dark-factory.md`). It authors issues into the dark-factory-ready state.
+The `darkfactory` skill is the operator: it walks the parent's ordered children
+and turns them into ships. The two are separate stages joined by the
+`darkf-todo` label.
 
 ## When to Load
 
 - After a brainstorming/grill/lavish session produces a plan/spec doc
 - Captain wants to break a large feature into overnight-executable phases
-- Interactive mode: captain describes feature, skill proposes breakdown
+- Captain describes the feature inline and wants per-phase issues created
+- `bin/fm-darkf-breakdown.sh` is the executable backing this skill
 
-## Input Sources
+## What the script does
 
-| Source | Flag | Description |
-|--------|------|-------------|
-| Plan/spec markdown file | `--plan SPEC.md` | Structured spec with phases/sections |
-| Lavish board URL/ID | `--from-lavish board-123` | Visual design with phased comparisons |
-| Brainstorming session artifact | `--from-brainstorming` | Reads `data/brainstorming-notes.md` or similar |
-| Interactive | `--interactive` | Prompts captain for feature description |
+`bin/fm-darkf-breakdown.sh` uses **gh-axi only** (never raw `gh`). It:
 
-## Output
+1. Resolves the current user from `gh-axi api user` (never hardcoded).
+2. Creates the epic (labeled `darkf-epic`) whose body carries the full
+   functionality and the ordered phase list.
+3. Creates one child issue per phase, each titled
+   `<Theme> - Phase <N>: <description>` (Theme = epic title, shared by all
+   children), labeled `darkf-todo` (all-eligible) and `phase:N` (display only),
+   assigned to the current user by default, and carrying the 4-section template.
+4. Links each child as a sub-issue of the epic, in creation order. That ordering
+   is what `/darkfactory` walks (1, 2, 3 ... one PR at a time).
+
+## Inputs
+
+| Input | Flag | How issues get their content |
+|-------|------|------------------------------|
+| Plan/spec markdown | `--plan SPEC.md` | Phases from `## Phase N` headings. Each issue REFERENCES the spec by path; the detailed proposed-change content stays in the spec. |
+| Interactive | `--interactive` | Captain describes the feature + each phase inline; the inline content IS the issue body. |
+| Lavish board | `--from-lavish ID` | Not yet implemented; use `--plan` or `--interactive`. |
+
+```bash
+# From a spec (content stays in the spec; issues point at it by path)
+bin/fm-darkf-breakdown.sh --plan SPEC.md --repo owner/repo
+
+# Interactive: break the spec/feature down inline into per-phase issues
+bin/fm-darkf-breakdown.sh --interactive --repo owner/repo
+
+# Preview without creating anything
+bin/fm-darkf-breakdown.sh --plan SPEC.md --repo owner/repo --dry-run
+```
+
+The script provisions the dark-factory labels (`darkf-epic`, `darkf-todo`,
+`darkf-wip`, `darkf-failed`) and `phase:N` in the target repo automatically, so
+issue creation never fails on a missing label.
+
+## Output shape
+
+Each child carries the **4-section dark-factory template**, is labeled
+`darkf-todo, phase:N`, is assigned to the current user, and is titled with the
+epic theme and phase so it passes the intake gates (assigned to you + template
+present + `darkf-todo`):
+
+- `### Problem` — the phase description
+- `### Impact` — inline description (interactive), or empty (plan: see spec)
+- `### Proposed Solution` — points at the spec path (plan) or inline content
+- `### Acceptance Criteria` — done condition / reference
 
 ```
 GitHub Issues Created:
-├── #123 "Epic: User Authentication System" [darkf-epic]
-│   ├── #124 "Phase 1: MFA Core Implementation" [darkf-todo, phase:1]
-│   ├── #125 "Phase 2: Recovery Codes & Backup" [darkf-todo, phase:2] (depends on #124)
-│   ├── #126 "Phase 3: Device Trust & Remember Me" [darkf-todo, phase:3] (depends on #125)
-│   └── #127 "Phase 4: Admin MFA Enforcement" [darkf-todo, phase:4] (depends on #126)
+├── #123 Epic: User Authentication System  [darkf-epic]  (full functionality)
+│   ├── #124 "User Authentication System - Phase 1: MFA Core" [darkf-todo, phase:1]
+│   ├── #125 "User Authentication System - Phase 2: Recovery Codes" [darkf-todo, phase:2]
+│   ├── #126 "User Authentication System - Phase 3: Device Trust" [darkf-todo, phase:3]
+│   └── #127 "User Authentication System - Phase 4: Admin MFA Enforcement" [darkf-todo, phase:4]
 ```
 
-Each sub-issue contains the **4-section dark-factory template**:
-- `### Problem`
-- `### Impact`
-- `### Proposed Solution`
-- `### Acceptance Criteria`
+All children are all-eligible (`darkf-todo`). The `phase:N` label is display-only;
+identity and ordering come from the parent's sub-issue list. Duplicate theme in
+the title is intentional - it makes the theme + phase visible on every child and
+limits cross-epic confusion.
 
-## Procedure
+## Hand-off
 
-### 1. Load Context
-- Read plan doc / Lavish board / brainstorming notes
-- Extract: feature name, phases, technical approach, risks, test requirements
-
-### 2. LLM Decomposition (if not pre-structured)
-Prompt:
-```
-Given this feature spec, decompose into 3-6 logical phases.
-Each phase must be independently implementable and testable.
-Output: phase name, description, dependencies, 4-section template content.
-```
-
-### 3. Lavish Review Board
-Build interactive board:
-- **Node per issue** (epic + phases)
-- **Edges** = `depends-on` relationships
-- **Click node** → edit 4 sections inline
-- **Validate** all 4 sections present before create
-
-### 4. Captain Confirmation
-Show summary:
-```
-Epic: User Authentication System
-  Phase 1: MFA Core (no deps) — 4 sections ✓
-  Phase 2: Recovery Codes (depends on #1) — 4 sections ✓
-  Phase 3: Device Trust (depends on #2) — 4 sections ✓
-  Phase 4: Admin Enforcement (depends on #3) — 4 sections ✓
-
-Create 5 issues in owner/repo? [y/N]
-```
-
-### 5. Create Issues via gh-axi
-```bash
-# Create epic
-EPIC_ID=$(gh issue create --repo $REPO --title "Epic: $NAME" --label darkf-epic --body-file epic.md)
-
-# Create phases in order
-PREV_ID=""
-for phase in phases; do
-  ISSUE_ID=$(gh issue create --repo $REPO --title "$phase.title" \
-    --label "darkf-todo,phase:$phase.num" --body-file phase.md)
-  if [ -n "$PREV_ID" ]; then
-    gh api graphql -f query="mutation { addSubIssue(input: {issueId: \"$EPIC_ID\", subIssueId: \"$ISSUE_ID\"}) }"
-    # Also add depends-on in body: "Depends on: #$PREV_ID"
-  fi
-  PREV_ID=$ISSUE_ID
-done
-```
-
-## Dark-Factory Integration
-
-**Intake script (`fm-darkf-intake.sh`)** behavior with phases:
-
-1. **Fetches** each `darkf-todo` issue individually (triggered hourly)
-2. **Detects parent epic** via GitHub sub-issue relationship (GraphQL)
-3. **Phase gating**:
-   - **Phase 1** (`phase:1`): always processed immediately
-   - **Phase N>1**: only processed if prior phase is complete
-     - Prior phase has `darkf-done` label, OR
-     - Prior phase PR is merged (checked via timeline)
-   - **Standalone issues** (no parent epic): processed normally
-4. **On validation pass** → creates backlog task, adds `darkf-wip` label
-
-**Phase promotion script (`fm-darkf-phase-promote.sh`)** — called from merge flow:
-
-1. Triggered when main firstmate detects PR merge (via merge poll)
-2. Reads `AUTO_ADVANCE_PHASES` from `config/darkf-schedule`
-3. If `true`: finds next phase sub-issue, adds `darkf-todo`, marks prior phase `darkf-done`
-4. Next hourly intake scan picks up promoted phase
-
-**Config** (`config/darkf-schedule`):
-```ini
-START_HOUR=0
-END_HOUR=6
-AUTO_ADVANCE_PHASES=false  # default false; enable after pilot confirms pipeline
-```
-
-## Commands
-
-```bash
-# From plan doc
-bin/fm-darkf-breakdown.sh --plan SPEC.md --repo owner/repo
-
-# From Lavish board
-bin/fm-darkf-breakdown.sh --from-lavish board-456 --repo owner/repo
-
-# Interactive
-bin/fm-darkf-breakdown.sh --interactive --repo owner/repo
-
-# With custom phase count
-bin/fm-darkf-breakdown.sh --plan SPEC.md --repo owner/repo --phases 4
-```
-
-## Files Created
-
-- `bin/fm-darkf-breakdown.sh` — executable entry point
-- This skill document
+After creation, every child is tagged `darkf-todo` and assigned to the current
+user. `/darkfactory` walks the parent's children in order, one PR at a time
+(waiting for review-and-merge, or auto-merge under yolo-on, before the next), and
+stops if it reaches a child that is not assigned to the operator.
 
 ## Dependencies
 
-- `gh-axi` (GitHub CLI wrapper) — for issue creation + GraphQL sub-issue linking
-- `lavish-axi` — for review board (optional, falls back to text review)
-- `jq` — JSON parsing
-- `darkf-intake` skill — downstream consumer
+- `gh-axi` (GitHub CLI wrapper) — issue creation, sub-issue linking, labels
+- `darkf-intake` / `darkfactory` skill — downstream consumers
+- `jq` — not required; output fields are parsed from gh-axi output
+
+## Files Created
+
+- `bin/fm-darkf-breakdown.sh` — executable, gh-axi only, `--dry-run`, label provisioning
+- This skill document
