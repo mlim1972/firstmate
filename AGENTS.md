@@ -322,6 +322,8 @@ Serialize only for a true semantic dependency, shared mutable external state, in
 Write the task-specific brief under section 11 before spawning.
 Fill the task subsections according to section 11.
 
+When the captain invokes `/darkfactory` (optionally with project names), load the `darkfactory` skill and follow it for the manual, serial, parent-ordered all-eligible intake and overnight PR run across registered projects.
+
 ### Dispatch and supervision handoff
 
 Spawn only through `bin/fm-spawn.sh` after the profile and backend checks in section 4.

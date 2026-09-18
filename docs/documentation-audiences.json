@@ -515,6 +515,22 @@
     {
       "path": "tests/captures/no-mistakes-v1.70.1/README.md",
       "audience": "maintainer-verification"
+    },
+    {
+      "path": ".agents/skills/darkfactory/SKILL.md",
+      "audience": "operator-current"
+    },
+    {
+      "path": ".agents/skills/darkf-feature-breakdown/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/darkf-intake/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "docs/dark-factory.md",
+      "audience": "operator-current"
     }
   ]
 }
