@@ -1,10 +1,30 @@
 #!/usr/bin/env bash
-# darkf-intake: validate GitHub issue against dark-factory task template
-# and create a Firstmate backlog item on success.
-# Phase-aware: only processes Phase 1 initially; higher phases wait for prior phase completion.
+# darkf-intake: validate a GitHub issue against the dark-factory task template
+# and create a Firstmate backlog ship task on success.
+# Uses gh-axi only. The current user is read from gh-axi, never hardcoded.
+# Gates (in order, each fail exits before creating anything):
+#   1. issue must be OPEN and carry the 'darkf-todo' label
+#   2. ASSIGNEE GATE: the issue must be assigned to the current gh-axi user
+#   3. DEPENDENCY GATE (option A): if the issue has sub-issues (dependents),
+#      every dependent must also carry 'darkf-todo'; otherwise the parent is
+#      skipped because a PR for it alone has no point.
+#   4. TEMPLATE GATE: body or comments must contain all four required
+#      section headers (### Problem, ### Impact, ### Proposed Solution,
+#      ### Acceptance Criteria).
+# On total success: creates the backlog ship task, records darkf_* in task
+# meta, and adds the 'darkf-wip' label.
+# On failure: labels the issue 'darkf-failed', removes 'darkf-todo', comments
+# the missing sections. The dependency gate SKIPS without labeling (not ready).
+# The assignee gate STOPS (exit 5): dark factory halts because a child not
+# assigned to the current user means the serial chain cannot proceed. That
+# distinct code lets the /darkfactory skill distinguish "stop the run" from
+# "skip this one and continue".
+#
 # Usage: fm-darkf-intake.sh <issue-url>
-# Exits 0 on success (backlog item created), 1 on validation failure,
-# 2 on usage/config error, 3 on GitHub auth/permission error.
+# Env: DRY_RUN=1  print the gate decisions and the task that would be created,
+#                 mutating nothing (no backlog task, no label change).
+# Exits: 0 success (or clean skip), 1 validation failure, 2 usage/config,
+#        3 gh-axi auth/permission/dependency error, 5 assignee STOP (not mine).
 
 set -eu
 
@@ -16,18 +36,24 @@ usage() {
   cat <<'EOF'
 Usage: fm-darkf-intake.sh <issue-url>
 
-Validates a GitHub issue labeled 'darkf-todo' against the dark-factory
-task template (problem, impact, proposed-solution, acceptance-criteria).
-On success: creates a Firstmate backlog ship task, adds 'darkf-wip' label.
-On failure: adds 'darkf-failed' label, removes 'darkf-todo', comments missing sections.
+Validates a GitHub issue against the dark-factory task template and creates a
+Firstmate backlog ship task on success. Uses gh-axi only; the current user is
+read from gh-axi, never hardcoded.
 
-Phase-aware behavior:
-- Standalone issues (no parent epic): processed normally
-- Phase 1 issues (label phase:1): processed immediately
-- Phase N>1 issues: only processed if prior phase is complete (darkf-done or PR merged)
-- Auto-advance: when Phase N PR merges, promotes Phase N+1 if AUTO_ADVANCE_PHASES=true
+Gates (in order):
+  1. OPEN + has the 'darkf-todo' label
+  2. assigned to the current gh-axi user (otherwise STOP, exit 5 - dark factory
+     halts: a child not assigned to the operator cannot be part of the serial
+     chain)
+  3. if the issue has sub-issues, every dependent also carries 'darkf-todo'
+     (otherwise SKIP, no change)
+  4. body or comments contain all four required section headers
 
-Requires: gh CLI authenticated with repo scope (Contents R/W, Issues R/W, PRs R/W)
+On success: creates a backlog ship task, records darkf_* in its meta, adds
+'darkf-wip'. On template failure: labels 'darkf-failed', removes 'darkf-todo',
+comments the missing sections.
+
+Env: DRY_RUN=1 prints the gate decisions and would-be task, mutating nothing.
 EOF
 }
 
@@ -38,7 +64,7 @@ fi
 
 ISSUE_URL="$1"
 
-# Parse owner/repo/number from URL
+# ---- resolve the issue identity -----------------------------------------------
 if ! [[ "$ISSUE_URL" =~ ^https://github\.com/([^/]+)/([^/]+)/issues/([0-9]+) ]]; then
   echo "error: not a valid GitHub issue URL: $ISSUE_URL" >&2
   exit 2
@@ -48,164 +74,105 @@ REPO="${BASH_REMATCH[2]}"
 NUMBER="${BASH_REMATCH[3]}"
 REPO_FULL="$OWNER/$REPO"
 
-# Check gh auth
-if ! command -v gh >/dev/null 2>&1; then
-  echo "error: gh CLI not found on PATH" >&2
+# ---- gh-axi present and authenticated, read the current user ------------------
+if ! command -v gh-axi >/dev/null 2>&1; then
+  echo "error: gh-axi CLI not found on PATH" >&2
   exit 3
 fi
-if ! gh auth status >/dev/null 2>&1; then
-  echo "error: gh not authenticated; run 'gh auth login'" >&2
+CURRENT_USER=$(gh-axi api user 2>/dev/null | sed -n 's/^login:[[:space:]]*//p' | head -1 || true)
+if [ -z "$CURRENT_USER" ]; then
+  echo "error: gh-axi not authenticated; log in first" >&2
   exit 3
 fi
 
-# Fetch issue data
-ISSUE_JSON=$(gh issue view "$ISSUE_URL" --json body,comments,labels,number,title,state --repo "$REPO_FULL" 2>/dev/null) || {
+# ---- fetch the issue body (full, unescaped) + state ---------------------------
+# gh-axi api renders YAML-ish output. The body is one quoted scalar with
+# escaped \n, so strip the quotes and unescape it for header scanning.
+BODY_ESC=$(gh-axi api "/repos/$REPO_FULL/issues/$NUMBER" --full 2>/dev/null \
+  | sed -n 's/^body:[[:space:]]*//p' | head -1 || true)
+if [ -z "${BODY_ESC:-}" ]; then
   echo "error: failed to fetch issue (permission denied or not found)" >&2
   exit 3
-}
+fi
+BODY=$(printf '%b' "${BODY_ESC//\"/}")
 
-TITLE=$(printf '%s' "$ISSUE_JSON" | jq -r .title)
-BODY=$(printf '%s' "$ISSUE_JSON" | jq -r .body // "")
-STATE=$(printf '%s' "$ISSUE_JSON" | jq -r .state)
-LABELS=$(printf '%s' "$ISSUE_JSON" | jq -r '.labels[].name' | tr '\n' ' ')
+STATE=$(gh-axi api "/repos/$REPO_FULL/issues/$NUMBER" --full 2>/dev/null \
+  | sed -n 's/^state:[[:space:]]*//p' | head -1 || true)
 
-# Check darkf-todo label present
-if ! printf '%s' "$LABELS" | grep -qw 'darkf-todo'; then
-  echo "error: issue does not have 'darkf-todo' label" >&2
-  exit 1
+# labels: fetch WITHOUT --full (clean id,name,color rows; --full injects a
+# comma-filled node_id/url column that breaks field-2 parsing). Rows appear
+# between a "^labels[N]{" header and the next top-level key (^state:); name is
+# field 2.
+LABELS=$(gh-axi api "/repos/$REPO_FULL/issues/$NUMBER" 2>/dev/null \
+  | sed -n '/^labels\[/,$p' | sed '/^state:/,$d' \
+  | sed -n 's/^[[:space:]]*[0-9]*,[[:space:]]*//p' \
+  | sed 's/,.*//; s/"//g; s/[[:space:]]*$//')
+
+# assignees: fetch WITHOUT --full. Rows "login,id,type" between a
+# "^assignees[" header and the next top-level key (assignee/state); login is
+# field 1. Keep only rows that look like login,id,type.
+ASSIGNEES=$(gh-axi api "/repos/$REPO_FULL/issues/$NUMBER" 2>/dev/null \
+  | sed -n '/^assignees\[/,$p' | sed '/^assignee:/,$d' \
+  | sed -n 's/^[[:space:]]*//p' \
+  | grep -E '^[^[:space:]]+,[0-9]+,(User|Bot)$' | sed 's/,.*//' || true)
+
+# ---- gate 1: state + darkf-todo label -----------------------------------------
+if [ "$STATE" != "open" ]; then
+  echo "skip: issue #$NUMBER is $STATE, not open"
+  exit 0
+fi
+if ! printf '%s\n' "$LABELS" | grep -qw 'darkf-todo'; then
+  echo "skip: issue #$NUMBER does not carry 'darkf-todo'"
+  exit 0
 fi
 
-# ---------------------------------------------------------------------------
-# PHASE-AWARE LOGIC
-# ---------------------------------------------------------------------------
-# Extract phase number from labels (phase:N)
-PHASE_LABEL=$(printf '%s' "$LABELS" | grep -oE 'phase:[0-9]+' | head -1 || true)
-PHASE_NUM=0
-if [ -n "$PHASE_LABEL" ]; then
-  PHASE_NUM="${PHASE_LABEL#phase:}"
+# ---- gate 2: assignee must be the current user; NOT assigned => STOP -------
+if ! printf '%s\n' "$ASSIGNEES" | grep -qx "$CURRENT_USER"; then
+  echo "stop: issue #$NUMBER is not assigned to $CURRENT_USER (darkf-todo, not mine); halting the serial chain"
+  exit 5
 fi
 
-# Check if issue has a parent epic (darkf-epic label or sub-issue relationship)
-HAS_PARENT_EPIC=0
-if printf '%s' "$LABELS" | grep -qw 'darkf-epic'; then
-  # This IS the epic, not a phase
-  HAS_PARENT_EPIC=0
-else
-  # Check if it's a sub-issue of an epic via GraphQL
-  PARENT_EPIC=$(gh api graphql -f query="
-    query {
-      node(id: \"$(gh api graphql -f query='query { repository(owner: \"'$OWNER'\", name: \"'$REPO'\") { issue(number: '$NUMBER') { id } } }' --jq .data.repository.issue.id)\") {
-        ... on Issue {
-          parentIssue: timelineItems(first: 10, itemTypes: [CONNECTED_EVENT]) {
-            nodes {
-              ... on ConnectedEvent {
-                subject { ... on Issue { id number title labels(first: 10) { nodes { name } } } }
-              }
-            }
-          }
-        }
-      }
-    }" --jq '.data.node.parentIssue.nodes[]?.subject | select(.labels.nodes[].name == "darkf-epic") | .number' 2>/dev/null || true)
-  if [ -n "$PARENT_EPIC" ]; then
-    HAS_PARENT_EPIC=1
+# ---- gate 3: dependency gate - every sub-issue must also carry darkf-todo ------
+# Option A: a parent is only dispatchable when its whole dependent set is tagged.
+SUBISSUES=$(gh-axi issue subissue list "$NUMBER" -R "$REPO_FULL" 2>/dev/null \
+  | sed -n 's/^[[:space:]]*\([0-9][0-9]*\),.*/\1/p' || true)
+if [ -n "$SUBISSUES" ]; then
+  # set of all darkf-todo-tagged open issue numbers in this repo (any assignee);
+  # number is gh-axi's default first column, so no --fields flag is needed.
+  DARKF_SET=$(gh-axi issue list -R "$REPO_FULL" --state open --label darkf-todo --limit 100 2>/dev/null \
+    | sed -n 's/^[[:space:]]*\([0-9][0-9]*\),.*/\1/p' || true)
+  MISSING_DEP=""
+  while IFS= read -r dep; do
+    [ -n "$dep" ] || continue
+    if ! printf '%s\n' "$DARKF_SET" | grep -qx "$dep"; then
+      MISSING_DEP="$MISSING_DEP $dep"
+    fi
+  done <<< "$SUBISSUES"
+  if [ -n "$MISSING_DEP" ]; then
+    echo "skip: issue #$NUMBER depends on sub-issue(s) not carrying darkf-todo:$MISSING_DEP"
+    exit 0
   fi
+  echo "dependency gate: all dependents carry darkf-todo"
 fi
 
-# Phase gating logic
-if [ "$HAS_PARENT_EPIC" -eq 1 ] && [ "$PHASE_NUM" -gt 0 ]; then
-  if [ "$PHASE_NUM" -eq 1 ]; then
-    # Phase 1: always process
-    echo "Phase 1 of epic #$PARENT_EPIC → processing"
-  else
-    # Phase N>1: check if prior phase is complete
-    PRIOR_PHASE=$((PHASE_NUM - 1))
-    echo "Phase $PHASE_NUM of epic #$PARENT_EPIC → checking if Phase $PRIOR_PHASE is complete"
-
-    # Find prior phase issue number (sub-issue of same epic with phase:PRIOR_PHASE)
-    PRIOR_ISSUE=$(gh api graphql -f query="
-      query {
-        repository(owner: \"$OWNER\", name: \"$REPO\") {
-          issue(number: $PARENT_EPIC) {
-            subIssues(first: 20) {
-              nodes {
-                number
-                labels(first: 10) { nodes { name } }
-                state
-              }
-            }
-          }
-        }
-      }" --jq ".data.repository.issue.subIssues.nodes[] | select(.labels.nodes[].name == \"phase:$PRIOR_PHASE\") | .number" 2>/dev/null || true)
-
-    if [ -z "$PRIOR_ISSUE" ]; then
-      echo "error: could not find Phase $PRIOR_PHASE issue for epic #$PARENT_EPIC" >&2
-      exit 1
-    fi
-
-    # Check prior phase status
-    PRIOR_JSON=$(gh issue view "$PRIOR_ISSUE" --json state,labels --repo "$REPO_FULL" 2>/dev/null) || {
-      echo "error: failed to fetch prior phase issue #$PRIOR_ISSUE" >&2
-      exit 3
-    }
-    PRIOR_STATE=$(printf '%s' "$PRIOR_JSON" | jq -r .state)
-    PRIOR_LABELS=$(printf '%s' "$PRIOR_JSON" | jq -r '.labels[].name' | tr '\n' ' ')
-
-    PRIOR_DONE=0
-    if [ "$PRIOR_STATE" = "CLOSED" ] || printf '%s' "$PRIOR_LABELS" | grep -qw 'darkf-done'; then
-      PRIOR_DONE=1
-    fi
-
-    # Also check if prior phase PR was merged (via merge poll in main firstmate)
-    # This is a best-effort check; the main firstmate's merge poll will handle promotion
-    if [ "$PRIOR_DONE" -eq 0 ]; then
-      # Check if there's a merged PR for the prior phase
-      MERGED_PR=$(gh api graphql -f query="
-        query {
-          repository(owner: \"$OWNER\", name: \"$REPO\") {
-            issue(number: $PRIOR_ISSUE) {
-              timelineItems(first: 20, itemTypes: [CROSS_REFERENCED_EVENT]) {
-                nodes {
-                  ... on CrossReferencedEvent {
-                    source { ... on PullRequest { state merged mergedAt } }
-                  }
-                }
-              }
-            }
-          }
-        }" --jq ".data.repository.issue.timelineItems.nodes[]?.source | select(.state == \"MERGED\") | .mergedAt" 2>/dev/null | head -1 || true)
-      if [ -n "$MERGED_PR" ]; then
-        PRIOR_DONE=1
-      fi
-    fi
-
-    if [ "$PRIOR_DONE" -eq 0 ]; then
-      # Prior phase not done → skip this intake run, leave darkf-todo for later
-      echo "paused: Phase $PHASE_NUM waiting for Phase $PRIOR_PHASE (issue #$PRIOR_ISSUE) to complete"
-      exit 0
-    fi
-
-    echo "Phase $PRIOR_PHASE complete → processing Phase $PHASE_NUM"
-  fi
-else
-  # Standalone issue (no parent epic) or epic itself → process normally
-  if [ "$PHASE_NUM" -gt 0 ]; then
-    echo "Standalone phase:$PHASE_NUM issue → processing"
-  fi
+# ---- gate 4: template validation (body or comments) ----------------------------
+COMMENTS=$(gh-axi api "/repos/$REPO_FULL/issues/$NUMBER/comments" --full 2>/dev/null \
+  | sed -n 's/^[[:space:]]*body:[[:space:]]*//p' | sed 's/^"//; s/"$//' || true)
+COMMENTS_UNESC=""
+if [ -n "$COMMENTS" ]; then
+  COMMENTS_UNESC=$(printf '%b' "$COMMENTS")
 fi
-
-# ---------------------------------------------------------------------------
-# TEMPLATE VALIDATION (unchanged)
-# ---------------------------------------------------------------------------
-COMMENTS=$(printf '%s' "$ISSUE_JSON" | jq -r '.comments[].body // ""' | tr '\n' ' ')
-FULL_TEXT="$BODY $COMMENTS"
+FULL_TEXT="$BODY"$'\n'"$COMMENTS_UNESC"
 
 REQUIRED=("problem" "impact" "proposed-solution" "acceptance-criteria")
 MISSING=()
-
 for section in "${REQUIRED[@]}"; do
-  PATTERN="^###[[:space:]]*${section//-/-?}[[:space:]]"
+  # words joined by a space or hyphen (Proposed Solution / Proposed-Solution);
+  # section may be followed by a space or end-of-line (### Problem\n)
+  PATTERN_SECTION=${section//-/[-[:space:]]?}
+  PATTERN="^###[[:space:]]*${PATTERN_SECTION}([[:space:]]|$)"
   if ! printf '%s' "$FULL_TEXT" | grep -qiE "$PATTERN"; then
-    ALT_PATTERN="^${section^^}:"
+    ALT_PATTERN="^$(printf '%s' "$section" | tr '[:lower:]' '[:upper:]'):"
     if ! printf '%s' "$FULL_TEXT" | grep -qiE "$ALT_PATTERN"; then
       MISSING+=("$section")
     fi
@@ -218,24 +185,35 @@ if [ "${#MISSING[@]}" -gt 0 ]; then
 
 Required sections (case-insensitive):
 - ### Problem
-- ### Impact  
+- ### Impact
 - ### Proposed Solution (or Proposed-Solution)
 - ### Acceptance Criteria (or Acceptance-Criteria)
 
 Add these to the issue body or a comment, then the next intake run will pick it up."
-
-  gh issue edit "$NUMBER" --repo "$REPO_FULL" --remove-label darkf-todo --add-label darkf-failed >/dev/null
-  gh issue comment "$NUMBER" --repo "$REPO_FULL" --body "$COMMENT" >/dev/null
+  if [ "${DRY_RUN:-0}" != "1" ]; then
+    gh-axi issue edit "$NUMBER" -R "$REPO_FULL" --remove-label darkf-todo --add-label darkf-failed >/dev/null
+    gh-axi issue comment "$NUMBER" -R "$REPO_FULL" --body "$COMMENT" >/dev/null
+  else
+    echo "[dry-run] would label issues/$NUMBER darkf-failed and comment missing sections"
+  fi
   echo "failed: $MISSING_LIST"
   exit 1
 fi
 
-# ---------------------------------------------------------------------------
-# CREATE BACKLOG TASK
-# ---------------------------------------------------------------------------
-PROJECT_NAME=$(grep -E "^\s*- ${REPO//\//\\/}\s" "$FM_ROOT/data/projects.md" 2>/dev/null | head -1 | sed -E 's/^\s*-\s+([^[]+).*/\1/' | xargs)
-if [ -z "$PROJECT_NAME" ]; then
-  PROJECT_NAME=$(grep -i "$REPO" "$FM_ROOT/data/projects.md" 2>/dev/null | head -1 | sed -E 's/^\s*-\s+([^[]+).*/\1/' | xargs)
+# ---- create the backlog task ---------------------------------------------------
+TITLE=$(gh-axi api "/repos/$REPO_FULL/issues/$NUMBER" --full 2>/dev/null \
+  | sed -n 's/^title:[[:space:]]*//p' | head -1 | sed 's/^"//; s/"$//' || true)
+TITLE=${TITLE:-"issue #$NUMBER"}
+
+PROJECT_NAME=""
+REPO_NAME="${REPO#*/}"
+# registry stores the repo NAME (brainiac), not owner/name; match the name part.
+line=$(grep -E "^[[:space:]]*-[[:space:]]+${REPO_NAME}([[:space:]]|\[)" "$FM_ROOT/data/projects.md" 2>/dev/null | head -1)
+if [ -z "$line" ]; then
+  line=$(grep -i "$REPO_NAME" "$FM_ROOT/data/projects.md" 2>/dev/null | head -1)
+fi
+if [ -n "$line" ]; then
+  PROJECT_NAME=$(printf '%s\n' "$line" | sed -E 's/^ *- *([^[]+).*/\1/' | awk '{$1=$1};1')
 fi
 if [ -z "$PROJECT_NAME" ]; then
   echo "error: repo $REPO_FULL not registered in data/projects.md; run project-management add first" >&2
@@ -243,23 +221,31 @@ if [ -z "$PROJECT_NAME" ]; then
 fi
 
 TASK_TITLE="darkf: $TITLE"
-TASK_ID=$(bin/fm-tasks-axi.sh add "$TASK_TITLE" --kind ship --repo "$PROJECT_NAME" --format json 2>/dev/null | jq -r .id) || {
+TASKS="$FM_ROOT/bin/fm-tasks-axi.sh"
+if [ "${DRY_RUN:-0}" = "1" ]; then
+  echo "[dry-run] would create task: $TASK_TITLE (repo=$PROJECT_NAME, issue=$ISSUE_URL, assignee=$CURRENT_USER)"
+  exit 0
+fi
+
+TASK_JSON=$("$TASKS" add "$TASK_TITLE" --mint --kind ship --repo "$PROJECT_NAME" --json 2>/dev/null) || {
   echo "error: failed to create backlog task" >&2
   exit 2
 }
+TASK_ID=$(printf '%s' "$TASK_JSON" | jq -r '.task.id // empty' 2>/dev/null || true)
+if [ -z "$TASK_ID" ]; then
+  echo "error: could not read task id from tasks-axi output" >&2
+  exit 2
+fi
 
-META="$FM_ROOT/state/$TASK_ID.meta"
-mkdir -p "$FM_ROOT/state/$TASK_ID"
+mkdir -p "$FM_ROOT/state"
 {
   echo "darkf_issue=$ISSUE_URL"
   echo "darkf_number=$NUMBER"
   echo "darkf_repo=$REPO_FULL"
-  [ "$HAS_PARENT_EPIC" -eq 1 ] && echo "darkf_epic=$PARENT_EPIC"
-  [ "$PHASE_NUM" -gt 0 ] && echo "darkf_phase=$PHASE_NUM"
-} >> "$META"
+  echo "darkf_assignee=$CURRENT_USER"
+} >> "$FM_ROOT/state/$TASK_ID.meta"
 
-# Add darkf-wip label
-gh issue edit "$NUMBER" --repo "$REPO_FULL" --add-label darkf-wip >/dev/null
+[ "${DRY_RUN:-0}" = "1" ] || gh-axi issue edit "$NUMBER" -R "$REPO_FULL" --add-label darkf-wip >/dev/null
 
-echo "success: created task $TASK_ID for $REPO_FULL#$NUMBER"
+echo "success: created task $TASK_ID for $REPO_FULL#$NUMBER (assignee $CURRENT_USER)"
 exit 0

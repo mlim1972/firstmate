@@ -507,6 +507,22 @@
     {
       "path": "skills/stow/SKILL.md",
       "audience": "public-product"
+    },
+    {
+      "path": ".agents/skills/darkfactory/SKILL.md",
+      "audience": "operator-current"
+    },
+    {
+      "path": ".agents/skills/darkf-feature-breakdown/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/darkf-intake/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "docs/dark-factory.md",
+      "audience": "operator-current"
     }
   ]
 }
