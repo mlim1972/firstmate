@@ -1,44 +1,58 @@
 #!/usr/bin/env bash
-# darkf-feature-breakdown: decompose a feature plan into GitHub epic + phased sub-issues
-# for dark-factory overnight processing.
-# Usage: fm-darkf-breakdown.sh --plan SPEC.md --repo owner/repo [--phases N] [--interactive] [--from-lavish ID]
+# darkf-feature-breakdown: decompose a feature plan/spec into a GitHub epic +
+# phased sub-issues for dark-factory overnight processing.
+# Uses gh-axi only.
+#
+# MODEL: the parent epic is the source of truth. Its body carries the full
+# functionality and the ordered phase list. Each child sub-issue is:
+#   - titled "  <Theme> - Phase <N>: <description>"   (Theme = epic title, so
+#     every child of a parent shares the theme; the title carries phase+theme,
+#     never the phase:N label)
+#   - labeled darkf-todo (ALL children are eligible from the start)
+#   - labeled phase:N (display/feed aid only, NOT identity or ordering)
+#   - assigned to the current gh-axi user
+#   - linked as a sub-issue of the epic, in creation order (this ordering is
+#     what /darkfactory walks: 1, 2, 3 ... one PR at a time, merge before next)
+#   - carrying the dark-factory 4-section template, referencing the spec by
+#     path (content stays in the spec) or inline (interactive).
+#
+# Usage: fm-darkf-breakdown.sh --plan SPEC.md --repo owner/repo [--phases N]
+#        fm-darkf-breakdown.sh --interactive --repo owner/repo [--phases N]
+# Flags: --assignee <login>  override the assignee (default: current gh-axi user)
+#        --dry-run           print what would be created, create nothing
 
 set -eu
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
-
 usage() {
   cat <<'EOF'
-Usage: fm-darkf-breakdown.sh [options] --repo OWNER/REPO
+Usage: fm-darkf-breakdown.sh --plan SPEC.md --repo OWNER/REPO [--phases N]
+       fm-darkf-breakdown.sh --interactive --repo OWNER/REPO [--phases N]
 
-Decompose a feature into GitHub epic + phased sub-issues labeled for dark-factory.
+Decompose a feature into a GitHub epic (labeled darkf-epic) plus phased
+sub-issues. Each child carries the dark-factory 4-section template, the
+darkf-todo label (all eligible), a phase:N label (display only), is assigned to
+the current gh-axi user, and is linked as a sub-issue of the epic in order.
 
-Options:
-  --plan FILE          Plan/spec markdown file (phases extracted from headings)
-  --from-lavish ID     Lavish board ID/URL to extract phases from
-  --interactive        Prompt for feature description interactively
-  --repo OWNER/REPO    Target GitHub repository (required)
-  --phases N           Hint: number of phases to create (default: auto-detect)
-  --dry-run            Show what would be created without creating issues
-  -h, --help           Show this help
+Child titles: "<Theme> - Phase <N>: <description>", where <Theme> is the epic
+title (all children of a parent share it). The phase:N label is NEVER identity
+or ordering; the parent's sub-issue list order is.
 
-Input sources (choose one):
-  --plan SPEC.md           Structured spec with ## Phase N headings
-  --from-lavish board-123  Lavish board with phased design
-  --interactive            Captain describes feature interactively
+Input sources (choose exactly one):
+  --plan SPEC.md      A spec whose "## Phase N" headings define the phases.
+                      Children reference the spec by path; content stays in the
+                      spec.
+  --interactive       The captain describes the feature and each phase inline;
+                      the created issues carry that inline content.
 
-Each sub-issue gets the dark-factory 4-section template:
-  ### Problem
-  ### Impact
-  ### Proposed Solution
-  ### Acceptance Criteria
+Flags:
+  --repo OWNER/REPO   Target GitHub repository (required)
+  --phases N          Interactive hint for number of phases
+  --assignee <login>  Assignee for the created issues (default: current user)
+  --dry-run           Print what would be created; create nothing
+  --from-lavish ID    Not implemented (use --plan or --interactive)
+  -h, --help          Show this help
 
-Labels applied:
-  Epic: darkf-epic
-  Phases: darkf-todo, phase:1, phase:2, ...
-
-Sub-issue relationships created via GitHub GraphQL API.
+Uses gh-axi only.
 EOF
 }
 
@@ -47,6 +61,7 @@ LAVISH_ID=""
 INTERACTIVE=0
 REPO=""
 PHASES_HINT=""
+ASSIGNEE=""
 DRY_RUN=0
 
 while [ "$#" -gt 0 ]; do
@@ -56,13 +71,13 @@ while [ "$#" -gt 0 ]; do
     --interactive) INTERACTIVE=1; shift ;;
     --repo) REPO="$2"; shift 2 ;;
     --phases) PHASES_HINT="$2"; shift 2 ;;
+    --assignee) ASSIGNEE="$2"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "error: unknown option $1" >&2; usage; exit 2 ;;
   esac
 done
 
-# Validate input source
 SRC_COUNT=0
 [ -n "$PLAN_FILE" ] && SRC_COUNT=$((SRC_COUNT + 1))
 [ -n "$LAVISH_ID" ] && SRC_COUNT=$((SRC_COUNT + 1))
@@ -71,212 +86,190 @@ SRC_COUNT=0
 
 [ -n "$REPO" ] || { echo "error: --repo OWNER/REPO required" >&2; exit 2; }
 
-# Check gh auth
-if ! command -v gh >/dev/null 2>&1 || ! gh auth status >/dev/null 2>&1; then
-  echo "error: gh CLI not authenticated; run 'gh auth login'" >&2
+# gh-axi present and authenticated; resolve the current user once.
+if ! command -v gh-axi >/dev/null 2>&1; then
+  echo "error: gh-axi CLI not found on PATH" >&2
   exit 3
 fi
-
-# Check jq
-if ! command -v jq >/dev/null 2>&1; then
-  echo "error: jq not found on PATH" >&2
+CURRENT_USER=$(gh-axi api user 2>/dev/null | sed -n 's/^login:[[:space:]]*//p' | head -1 || true)
+if [ -z "$CURRENT_USER" ]; then
+  echo "error: gh-axi not authenticated; log in first" >&2
   exit 3
 fi
+ASSIGNEE=${ASSIGNEE:-$CURRENT_USER}
 
 # ---------------------------------------------------------------------------
-# Phase extraction from plan file
-# ---------------------------------------------------------------------------
-extract_phases_from_plan() {
-  local file="$1"
-  # Expect ## Phase 1: Name or ### Phase 1: Name headings
-  awk '
-    /^##?# Phase [0-9]+/ {
-      phase_num = $0
-      sub(/^##?# Phase [0-9]+:?[[:space:]]*/, "", phase_num)
-      gsub(/[[:space:]]+$/, "", phase_num)
-      print "PHASE|" NR "|" phase_num
-      next
-    }
-    /^### (Problem|Impact|Proposed Solution|Acceptance Criteria)/ {
-      section = $0
-      sub(/^###[[:space:]]*/, "", section)
-      gsub(/[[:space:]]+$/, "", section)
-      print "SECTION|" section
-      next
-    }
-    /^##/ && !/^##?# Phase/ {
-      # Other top-level heading, treat as context
-      print "CONTEXT|" $0
-    }
-  ' "$file"
-}
-
-# ---------------------------------------------------------------------------
-# Build issue body from extracted content
+# Phase extraction
 # ---------------------------------------------------------------------------
 build_phase_body() {
-  local phase_num="$1"
-  local phase_name="$2"
-  local content="$3"  # newline-separated sections
-
+  local phase_num="$1" phase_name="$2" src_note="$3" desc="$4" epic="$5"
   cat <<EOF
 ### Problem
-$content
+${phase_name}
 
 ### Impact
-
+${desc}
 
 ### Proposed Solution
-
+${src_note}
 
 ### Acceptance Criteria
-
+See the referenced material. The phase is done when its described behavior
+works and the relevant tests pass.
 
 ---
-*Phase $phase_num of epic: $EPIC_TITLE*
-*Depends on: $DEPENDS_ON*
+*Phase ${phase_num} of epic: ${epic}*
 EOF
 }
 
-# ---------------------------------------------------------------------------
-# Main decomposition logic
-# ---------------------------------------------------------------------------
 main() {
-  local phases_data=""
   local epic_title="Feature"
+  local phases_data=""
+  local -a phase_nums=() phase_names=() phase_bodies=() phase_ids=()
 
   if [ -n "$PLAN_FILE" ]; then
     [ -f "$PLAN_FILE" ] || { echo "error: plan file not found: $PLAN_FILE" >&2; exit 2; }
-    phases_data=$(extract_phases_from_plan "$PLAN_FILE")
-    epic_title=$(head -20 "$PLAN_FILE" | grep -E '^# ' | head -1 | sed 's/^# //')
+    PLAN_ABS=$(cd "$(dirname "$PLAN_FILE")" && pwd)/$(basename "$PLAN_FILE")
+    epic_title=$(head -30 "$PLAN_FILE" | grep -E '^# ' | head -1 | sed 's/^# //')
     [ -z "$epic_title" ] && epic_title=$(basename "$PLAN_FILE" .md)
+    SRC_NOTE="See $PLAN_ABS for the full detail (the proposed change lives in the spec, not this issue)."
+    phases_data=$(awk '
+      /^##?# Phase [0-9]+/ {
+        line = $0
+        if (match(line, /[0-9]+/)) num = substr(line, RSTART, RLENGTH)
+        name = line
+        sub(/^#+[[:space:]]*/, "", name)
+        sub(/^Phase[[:space:]]*[0-9]+[[:space:]]*:?[[:space:]]*/, "", name)
+        gsub(/[[:space:]]+$/, "", name)
+        print num "|" name "|"
+      }
+    ' "$PLAN_FILE")
+    if [ -z "$phases_data" ]; then
+      echo "error: no '## Phase N' headings found in $PLAN_FILE" >&2
+      exit 2
+    fi
   elif [ -n "$LAVISH_ID" ]; then
     echo "error: Lavish integration not yet implemented; use --plan or --interactive" >&2
     exit 2
   elif [ "$INTERACTIVE" -eq 1 ]; then
     echo "Interactive feature breakdown"
-    echo "Describe the feature (one paragraph):"
+    printf 'Feature description (one paragraph): '
     read -r FEATURE_DESC
-    echo "Number of phases (3-6):"
-    read -r PHASES_HINT
-    PHASES_HINT=${PHASES_HINT:-4}
-    # Generate phases via simple prompt (could call LLM here)
-    for i in $(seq 1 "$PHASES_HINT"); do
-      echo "Phase $i name:"
-      read -r PNAME
-      echo "Phase $i brief description:"
-      read -r PDESC
-      phases_data+="PHASE|$i|$PNAME|$PDESC
-"
+    printf 'Number of phases (3-6) [%s]: ' "${PHASES_HINT:-4}"
+    read -r NPHASES
+    [ -n "$NPHASES" ] || NPHASES=${PHASES_HINT:-4}
+    epic_title=${FEATURE_DESC:0:50}
+    SRC_NOTE="Content provided inline by the captain during breakdown."
+    for i in $(seq 1 "$NPHASES"); do
+      printf 'Phase %s name: ' "$i"; read -r PNAME
+      printf 'Phase %s description (what does it implement/ship?): ' "$i"; read -r PDESC
+      phases_data+="${i}|${PNAME}|${PDESC}"$'\n'
     done
-    epic_title=$(echo "$FEATURE_DESC" | cut -c1-50)
   fi
 
-  # Parse phases
-  local phases=()
-  local phase_names=()
-  local phase_descs=()
-  while IFS='|' read -r type num name desc; do
-    case "$type" in
-      PHASE) phases+=("$num"); phase_names+=("$name"); phase_descs+=("$desc") ;;
-    esac
+  while IFS='|' read -r num name desc; do
+    [ -n "$num" ] || continue
+    phase_nums+=("$num")
+    phase_names+=("$name")
+    if [ "$INTERACTIVE" -eq 1 ]; then
+      phase_bodies+=("$(build_phase_body "$num" "$name" "$SRC_NOTE" "$desc" "$epic_title")")
+    else
+      phase_bodies+=("$(build_phase_body "$num" "$name" "$SRC_NOTE" "" "$epic_title")")
+    fi
   done <<< "$phases_data"
 
-  if [ "${#phases[@]}" -eq 0 ]; then
-    echo "error: no phases found in input" >&2
+  if [ "${#phase_nums[@]}" -eq 0 ]; then
+    echo "error: no phases produced from input" >&2
     exit 2
   fi
 
   echo "=== Dark-Factory Feature Breakdown ==="
   echo "Repo: $REPO"
-  echo "Epic: $epic_title"
-  echo "Phases: ${#phases[@]}"
-  for i in "${!phases[@]}"; do
-    echo "  Phase ${phases[i]}: ${phase_names[i]}"
+  echo "Epic (theme): $epic_title"
+  echo "Assignee: $ASSIGNEE"
+  echo "Phases: ${#phase_nums[@]} (all-eligible)"
+  for i in "${!phase_nums[@]}"; do
+    echo "  ${epic_title} - Phase ${phase_nums[i]}: ${phase_names[i]}"
   done
   echo
 
   if [ "$DRY_RUN" -eq 1 ]; then
-    echo "DRY RUN - no issues created"
+    echo "DRY RUN - no issues created."
+    for i in "${!phase_nums[@]}"; do
+      echo "  would create: ${epic_title} - Phase ${phase_nums[i]}: ${phase_names[i]}  (darkf-todo, phase:${phase_nums[i]}, assignee $ASSIGNEE)"
+    done
     exit 0
   fi
 
-  echo "Create these issues? [y/N]"
+  printf 'Create these issues in %s? [y/N] ' "$REPO"
   read -r CONFIRM
   [ "$CONFIRM" = "y" ] || [ "$CONFIRM" = "Y" ] || { echo "aborted"; exit 0; }
 
-  # Create epic
+  # --- ensure the dark-factory labels exist (idempotent) ---
+  echo "Ensuring dark-factory labels in $REPO..."
+  for spec in "darkf-epic:a2eeef" "darkf-todo:1d76db" "darkf-wip:1d76db" "darkf-failed:d73a4a"; do
+    name="${spec%%:*}"; color="${spec##*:}"
+    if ! label_out=$(gh-axi label create -R "$REPO" --name "$name" --color "$color" --description "Dark-factory:$name" 2>&1); then
+      printf '%s' "$label_out" | grep -qi "already_exists\|already exists" || echo "  warn: could not ensure label $name"
+    fi
+  done
+  for num in "${phase_nums[@]}"; do
+    gh-axi label create -R "$REPO" --name "phase:$num" --color 5319e7 --description "Dark-factory phase (display only; ordering is the parent's sub-issue list)" >/dev/null 2>&1 || true
+  done
+
+  # --- epic body: full functionality + ordered phase list ---
   local epic_body="Epic: $epic_title
 
-This epic tracks the overall feature. Sub-issues represent phased implementation.
+This epic carries the full functionality. Its sub-issues are the work units,
+processed in order, one PR at a time (serial dark-factory run).
 
-## Phases
+## Phases (execution order)
 "
-  for i in "${!phases[@]}"; do
-    local dep=""
-    [ "$i" -gt 0 ] && dep=" (depends on Phase ${phases[$((i-1))]})"
-    epic_body+="- Phase ${phases[i]}: ${phase_names[i]}$dep
-"
+  for i in "${!phase_nums[@]}"; do
+    epic_body+="- ${epic_title} - Phase ${phase_nums[i]}: ${phase_names[i]}"$'\n'
   done
-  epic_body+="
----
-*Managed by dark-factory pipeline. Phases execute sequentially overnight.*"
+  epic_body+=$'\n'"---
+Managed by the dark-factory pipeline (run with /darkfactory)."
 
-  if [ "$DRY_RUN" -eq 0 ]; then
-    echo "Creating epic..."
-    EPIC_JSON=$(gh issue create --repo "$REPO" --title "Epic: $epic_title" --label darkf-epic --body "$epic_body" --json id,number)
-    EPIC_NUMBER=$(echo "$EPIC_JSON" | jq -r .number)
-    EPIC_ID=$(echo "$EPIC_JSON" | jq -r .id)
-    echo "Created epic #$EPIC_NUMBER (id: $EPIC_ID)"
-  else
-    EPIC_NUMBER=999
-    EPIC_ID="dummy"
+  # --- create epic ---
+  echo "Creating epic..."
+  OUT=$(gh-axi issue create -R "$REPO" --title "Epic: $epic_title" --label darkf-epic --body-file <(printf '%s' "$epic_body") 2>&1)
+  EPIC_NUMBER=$(printf '%s' "$OUT" | sed -n 's/^[[:space:]]*number:[[:space:]]*//p' | head -1)
+  if [ -z "$EPIC_NUMBER" ]; then
+    echo "error: failed to create epic:" >&2; printf '%s\n' "$OUT" >&2; exit 3
   fi
+  echo "  created epic #$EPIC_NUMBER"
 
-  # Create phases
-  local prev_issue_id=""
-  for i in "${!phases[@]}"; do
-    local phase_num="${phases[i]}"
-    local phase_name="${phase_names[i]}"
-    local phase_desc="${phase_descs[i]}"
-    local title="Phase $phase_num: $phase_name"
-    local depends_on=""
-    [ "$i" -gt 0 ] && depends_on="#$((EPIC_NUMBER + i))"  # approximate; will update after create
-
-    local body=$(build_phase_body "$phase_num" "$phase_name" "$phase_desc")
-
-    if [ "$DRY_RUN" -eq 0 ]; then
-      echo "Creating $title..."
-      ISSUE_JSON=$(gh issue create --repo "$REPO" --title "$title" --label "darkf-todo,phase:$phase_num" --body "$body" --json id,number)
-      ISSUE_NUMBER=$(echo "$ISSUE_JSON" | jq -r .number)
-      ISSUE_ID=$(echo "$ISSUE_JSON" | jq -r .id)
-      echo "  Created #$ISSUE_NUMBER (id: $ISSUE_ID)"
-
-      # Add as sub-issue of epic via GraphQL
-      gh api graphql -f query="
-        mutation {
-          addSubIssue(input: {issueId: \"$EPIC_ID\", subIssueId: \"$ISSUE_ID\"}) {
-            clientMutationId
-          }
-        }
-      " >/dev/null
-
-      # Update depends-on reference in epic body (optional, for visibility)
-      prev_issue_id="$ISSUE_ID"
-    else
-      echo "DRY RUN: would create $title"
+  # --- create children: all-eligible, sequential order via sub-issue links ---
+  for i in "${!phase_nums[@]}"; do
+    local num="${phase_nums[i]}" name="${phase_names[i]}" body="${phase_bodies[i]}"
+    local title="${epic_title} - Phase ${num}: ${name}"
+    local body_file
+    body_file=$(mktemp) || exit 2
+    printf '%s\n' "$body" > "$body_file"
+    echo "Creating: $title"
+    OUT=$(gh-axi issue create -R "$REPO" --title "$title" \
+      --label "darkf-todo" --label "phase:$num" \
+      --assignee "$ASSIGNEE" --body-file "$body_file" 2>&1)
+    rm -f "$body_file"
+    ISSUE_NUMBER=$(printf '%s' "$OUT" | sed -n 's/^[[:space:]]*number:[[:space:]]*//p' | head -1)
+    if [ -z "$ISSUE_NUMBER" ]; then
+      echo "error: failed to create Phase $num:" >&2; printf '%s\n' "$OUT" >&2; exit 3
     fi
+    echo "  created #$ISSUE_NUMBER (phase:$num, darkf-todo, assignee $ASSIGNEE)"
+    gh-axi issue subissue add "$EPIC_NUMBER" "$ISSUE_NUMBER" -R "$REPO" >/dev/null 2>&1 \
+      || echo "  warn: could not link #$ISSUE_NUMBER under epic #$EPIC_NUMBER (sub-issue API may be unavailable); it will still run"
+    phase_ids+=("$ISSUE_NUMBER")
   done
 
   echo
   echo "=== Done ==="
-  echo "Epic: #$EPIC_NUMBER"
-  for i in "${!phases[@]}"; do
-    echo "  Phase ${phases[i]}: #$((EPIC_NUMBER + i + 1))"
+  echo "Epic/theme: $epic_title  #$EPIC_NUMBER ($REPO)"
+  for i in "${!phase_nums[@]}"; do
+    echo "  Phase ${phase_nums[i]}: #${phase_ids[i]}  ${epic_title} - Phase ${phase_nums[i]}: ${phase_names[i]}"
   done
   echo
-  echo "Dark-factory will pick up Phase 1 on next hourly scan (00:00-06:00 UTC)."
-  echo "Subsequent phases auto-advance when prior phase PR merges (if AUTO_ADVANCE_PHASES=true)."
+  echo "All children are darkf-todo. Run /darkfactory to process them in order."
 }
 
 main
