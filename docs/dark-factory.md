@@ -1,539 +1,246 @@
-# Dark Factory: Overnight Issue-to-PR Pipeline
+# Dark Factory: The Full Workflow
 
-> **Status**: Scaffolded and ready for pilot. See [Quick Start](#quick-start) to run tonight.
+Dark Factory turns a feature idea into merged PRs while you sleep. You start it
+manually with `/darkfactory`; there is no scheduler, no cron, no secondmate.
 
----
-
-## What It Does
-
-While you sleep, Firstmate automatically:
-
-1. **Scans** your registered projects for GitHub issues labeled `darkf-todo`
-2. **Validates** each issue against a structured template (problem, impact, proposed solution, acceptance criteria)
-3. **Creates** a Firstmate backlog task with the correct delivery mode for the project
-4. **Dispatches** an isolated crew to implement the fix in a clean worktree
-5. **Runs** the project's full validation pipeline (tests, lint, typecheck, docs)
-6. **Opens** a **draft PR** with the changes
-7. **Waits** for your morning review
-
-You wake up to draft PRs ready for approval — no merge happens without you.
-
----
-
-## Architecture Overview
+This document walks the whole pipeline end to end, chapter by chapter, from the
+first step (creating the issue) to the last (merging the PR). Each chapter names
+the skill or script that owns it.
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                    YOUR SLEEP WINDOW (00:00–06:00 UTC)           │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  ┌──────────────┐    ┌─────────────────┐    ┌────────────────┐  │
-│  │ System cron  │───▶│ df-night-shift  │───▶│ Main Firstmate │  │
-│  │ (hourly)     │    │ secondmate      │    │ (dispatches)   │  │
-│  └──────────────┘    └─────────────────┘    └────────────────┘  │
-│         │                    │                      │             │
-│         ▼                    ▼                      ▼             │
-│  fm-darkf-           Scans all              Creates backlog      │
-│  trigger.sh          projects for          tasks, spawns        │
-│                      darkf-todo            crews in isolated    │
-│                      issues                worktrees             │
-│                                               │                 │
-│                                               ▼                 │
-│                                        ┌────────────────┐       │
-│                                        │ Validation     │       │
-│                                        │ pipeline       │       │
-│                                        │ (no-mistakes   │       │
-│                                        │  / direct-PR)  │       │
-│                                        └────────────────┘       │
-│                                               │                 │
-│                                               ▼                 │
-│                                        ┌────────────────┐       │
-│                                        │ Draft PR       │       │
-│                                        │ + merge poll   │       │
-│                                        └────────────────┘       │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                        MORNING REVIEW                            │
-├─────────────────────────────────────────────────────────────────┤
-│  /bearings include PRs  →  Review draft PRs  →  Approve/merge   │
-└─────────────────────────────────────────────────────────────────┘
+ 1. CREATE   darkf-feature-breakdown  plan/spec  ->  GitHub epic + phased issues
+ 2. MAKE READY  labeling + assignee + 4 sections (done during create)
+ 3. INTAKE   /darkfactory + fm-darkf-intake.sh   issues  ->  ship backlog tasks
+ 4. DISPATCH /darkfactory (skill)                 tasks   ->  one at a time
+ 5. DELIVER  fm-brief / fm-spawn (normal ship lifecycle)  ->  PR
+ 6. MERGE    project yolo posture                 PR      ->  your review or auto
 ```
 
 ---
 
-## Components
+## 1. Create the issue: `darkf-feature-breakdown`
 
-| Component | Location | Purpose |
-|-----------|----------|---------|
-| **Intake skill** | `.agents/skills/darkf-intake/` | Validates GitHub issues against dark-factory template |
-| **Intake script** | `bin/fm-darkf-intake.sh` | Fetches issue, checks 4 required sections, creates backlog task |
-| **Trigger script** | `bin/fm-darkf-trigger.sh` | Cron-callable; checks schedule, sends trigger to secondmate |
-| **Secondmate charter** | `data/df-night-shift/brief.md` | Persistent domain that runs intake on trigger |
-| **Schedule config** | `config/darkf-schedule` | UTC hour window (default 00:00–06:00) |
-| **Dispatch profile** | `config/crew-dispatch.json` | Routes intake work to `pi` harness with high effort |
-| **Project posture** | `data/projects.md` | Each project's delivery mode (`no-mistakes-prod-only` default) |
+This is the freestanding front end. It exists independently of the rest of the
+pipeline, and it is the first of the two disconnected chapters: an issue is not
+born dark-factory-ready; something has to author it into that state.
 
----
+`bin/fm-darkf-breakdown.sh` turns a feature plan into a GitHub issue hierarchy:
 
-## Configuration
+- A **parent epic** labeled `darkf-epic` that carries the full functionality and
+  the ordered phase list. It is the source of truth.
+- **Child sub-issues**, each labeled `darkf-todo` (all-eligible) plus `phase:N`
+  (display-only), linked as sub-issues of the epic in creation order.
 
-### 1. Sleep Window (`config/darkf-schedule`)
+Children are titled `<Theme> - Phase <N>: <description>`, where `<Theme>` is the
+epic title (shared by every child). The `phase:N` label is NEVER identity or
+ordering - the parent's sub-issue list order is. `/darkfactory` walks that
+order: Phase 1 first, then 2, 3, and so on.
 
-```ini
-# Dark-factory intake schedule (UTC, 24-hour format)
-# Only processes triggers when START_HOUR <= current_hour < END_HOUR
-START_HOUR=0
-END_HOUR=6
-```
+### Inputs
 
-**Adjust for your timezone:**
-| Your Zone | UTC Equivalent | Config |
-|-----------|----------------|--------|
-| US Pacific (PST) | 00:00–06:00 UTC = 16:00–22:00 PST | `START_HOUR=0, END_HOUR=6` + cron `0 0-5 * * *` |
-| US Pacific (PDT) | 00:00–06:00 UTC = 17:00–23:00 PDT | `START_HOUR=0, END_HOUR=6` + cron `0 0-5 * * *` |
-| US Eastern (EST) | 00:00–06:00 UTC = 19:00–01:00 EST | `START_HOUR=0, END_HOUR=6` + cron `0 0-5 * * *` |
-| Europe (CET) | 00:00–06:00 UTC = 01:00–07:00 CET | `START_HOUR=0, END_HOUR=6` + cron `0 0-5 * * *` |
-
-**Or shift the window:**
-```ini
-# Run 02:00–08:00 UTC instead
-START_HOUR=2
-END_HOUR=8
-```
-
-### 2. Cron Trigger (on Firstmate host)
+| Input | Flag | What it reads |
+|-------|------|---------------|
+| Plan/spec file | `--plan SPEC.md` | A markdown file whose `## Phase N` headings define the phases; **the issues reference the spec by path**, the detailed content stays in the spec |
+| Interactive | `--interactive` | Prompts for the feature description and each phase; the inline content IS the issue body |
+| Lavish board | `--from-lavish ID` | Not yet implemented (falls back to `--plan` or `--interactive`) |
 
 ```bash
-# Edit crontab (use UTC unless you set TZ)
-crontab -e
-
-# Hourly during sleep window (adjust hours to match your START_HOUR/END_HOUR)
-0 0-5 * * * /path/to/firstmate/bin/fm-darkf-trigger.sh >> /tmp/darkf-trigger.log 2>&1
-```
-
-**With timezone override:**
-```bash
-# Run at 17:00–23:00 US Pacific (00:00–06:00 UTC)
-0 17-23 * * * TZ=America/Los_Angeles /path/to/firstmate/bin/fm-darkf-trigger.sh ...
-```
-
-### 3. Project Registration (`data/projects.md`)
-
-Projects must be registered with a delivery posture:
-
-```markdown
-- my-project [no-mistakes-prod-only] - description
-- internal-tool [direct-PR] - description
-- local-script [local-only] - description
-```
-
-**Delivery modes:**
-| Mode | Behavior |
-|------|----------|
-| `no-mistakes-prod-only` | **Default**. Product-facing work → full `no-mistakes` pipeline. Internal tooling → `direct-PR`. |
-| `no-mistakes` | All work: review → tests → lint → docs → push → PR → CI |
-| `direct-PR` | Push + open PR (no no-mistakes pipeline) |
-| `local-only` | Stop at clean branch; captain merges locally |
-
-### 4. GitHub Issue Template
-
-Add to each project's `.github/ISSUE_TEMPLATE/darkf-task.yml`:
-
-```yaml
-name: "darkf Task"
-description: "Structured task for overnight dark-factory processing"
-title: "[darkf] "
-labels: ["darkf-todo"]
-body:
-  - type: markdown
-    attributes:
-      value: |
-        Fill all four sections below. The agent implements directly from this spec.
-  - type: textarea
-    id: problem
-    attributes:
-      label: "### Problem"
-      description: What is broken or needs to change?
-    validations:
-      required: true
-  - type: textarea
-    id: impact
-    attributes:
-      label: "### Impact"
-      description: Why does this matter? User-facing impact?
-    validations:
-      required: true
-  - type: textarea
-    id: proposed-solution
-    attributes:
-      label: "### Proposed Solution"
-      description: High-level approach (can be "figure it out", "you decide")
-    validations:
-      required: true
-  - type: textarea
-    id: acceptance-criteria
-    attributes:
-      label: "### Acceptance Criteria"
-      description: Observable done condition (can be "make existing tests pass")
-    validations:
-      required: true
-```
-
-**Or manually:** Add the four `###` headers to any issue body/comment:
-```markdown
-### Problem
-The login flow fails when MFA is enabled.
-
-### Impact
-Users with 2FA cannot sign in; blocks 15% of active users.
-
-### Proposed Solution
-Fix the token refresh logic in `auth/mfa.ts`. You decide the exact approach.
-
-### Acceptance Criteria
-All existing auth tests pass + manual MFA login works.
-```
-
-### 5. GitHub Permissions (PAT)
-
-The `gh` CLI needs a token with:
-| Permission | Access | Purpose |
-|------------|--------|---------|
-| Contents | Read & Write | Read repo, create branches, push commits |
-| Issues | Read & Write | Poll labels, add labels/comments |
-| Pull Requests | Read & Write | Create draft PRs, update metadata |
-| Metadata | Read | Required for fine-grained tokens |
-
----
-
-## Workflow Details
-
-### Intake Validation (runs hourly in sleep window)
-
-For each `darkf-todo` issue found:
-
-```
-1. Fetch issue via gh-axi (body + all comments)
-2. Scan for 4 required section headers (case-insensitive):
-   - ### Problem
-   - ### Impact
-   - ### Proposed Solution (or Proposed-Solution)
-   - ### Acceptance Criteria (or Acceptance-Criteria)
-3. ON PASS:
-   - Create backlog task: "darkf: <issue title>" (kind=ship)
-   - Record issue URL/number in task meta
-   - Add 'darkf-wip' label, keep 'darkf-todo'
-   - Report to main firstmate via parent status
-4. ON FAIL:
-   - Add 'darkf-failed' label, remove 'darkf-todo'
-   - Comment listing missing sections
-   - No backlog task created
-```
-
-### Dispatch & Execution (main Firstmate)
-
-Validated backlog tasks are picked up by the normal dispatch loop:
-
-1. **Dispatch profile** `dark-factory-intake` matches → harness `pi`, model `sonnet`, effort `xhigh`
-2. **fm-spawn.sh** creates isolated worktree (asserted in brief scaffold)
-3. **Brief** contains:
-   - `{TASK}` = issue spec (problem, impact, proposed solution, acceptance criteria)
-   - `{FIRSTMATE_SPEC}` = run project's validation (tests, lint, typecheck, docs)
-4. **Agent** runs project's delivery pipeline:
-   - `no-mistakes` → full pipeline → PR
-   - `direct-PR` → push + `gh pr create --draft`
-   - `local-only` → stop at clean branch
-5. **fm-pr-check.sh** registers PR URL + head SHA, arms merge poll
-
-### Merge Authority
-
-| Setting | Behavior |
-|---------|----------|
-| `yolo: off` (default) | Captain approves every PR merge |
-| `yolo: on` | Firstmate auto-merges green, in-scope PRs |
-
-**Dark factory defaults to `yolo: off`** — you merge in the morning.
-
----
-
-## Issue Creation: From Brainstorm to darkf-todo
-
-Before the overnight pipeline can run, you need structured issues. Two skills bridge the gap:
-
-### 1. Single Issue: `darkf-issue-from-session` (Lightweight)
-
-For one-off features after a brainstorming/grill session:
-
-```bash
-# Quick template editor
-cat > /tmp/darkf-issue.md <<'EOF'
-### Problem
-
-
-### Impact
-
-
-### Proposed Solution
-
-
-### Acceptance Criteria
-
-EOF
-$EDITOR /tmp/darkf-issue.md
-gh issue create --repo owner/repo --label darkf-todo --title "[darkf] Your Title" --body-file /tmp/darkf-issue.md
-```
-
-**Future skill** (not yet implemented): `/darkf-issue-from-session --from-brainstorming --repo owner/repo` — auto-fills template from session notes, shows Lavish preview, creates issue.
-
-### 2. Multi-Phase Feature: `darkf-feature-breakdown` (Scaffolded)
-
-For large features needing phased execution with dependencies:
-
-```bash
-# From a plan/spec doc (markdown with ## Phase N headings)
 bin/fm-darkf-breakdown.sh --plan SPEC.md --repo owner/repo
-
-# Interactive (no prior doc)
 bin/fm-darkf-breakdown.sh --interactive --repo owner/repo
-
-# Dry run to preview
 bin/fm-darkf-breakdown.sh --plan SPEC.md --repo owner/repo --dry-run
 ```
 
-**Creates:**
-- **Epic issue** labeled `darkf-epic` (tracks overall feature)
-- **Sub-issues** labeled `darkf-todo,phase:N` with `depends-on` links
-- Each sub-issue has the 4-section template pre-filled
+The 4-section template is pre-filled into every sub-issue at creation time (see
+chapter 2 for what those sections are and why they matter). The script runs on
+**gh-axi** (never raw `gh`), provisions the dark-factory labels (`darkf-epic`,
+`darkf-todo`, `darkf-wip`, `darkf-failed`) plus `phase:N` in the target repo, and
+assigns each phase issue to the current user so it passes the intake gates
+later.
 
-**Dark-factory behavior with phases:**
-1. Only **Phase 1** gets `darkf-todo` initially → picked up hourly
-2. When Phase 1 PR merges → auto-promotes Phase 2 (if `AUTO_ADVANCE_PHASES=true` in `config/darkf-schedule`)
-3. Subsequent phases execute sequentially overnight
+A plan/spec file `## Phase N` sections feed this directly. A brainstorming,
+grilling, or Lavish session that produces such a spec is the natural input.
 
-**Plan doc format (markdown):**
-```markdown
-# Feature: User Authentication System
+### What labels mean here
 
-## Phase 1: MFA Core Implementation
-### Problem
-...
-### Impact
-...
-### Proposed Solution
-...
-### Acceptance Criteria
-...
-
-## Phase 2: Recovery Codes & Backup
-### Problem
-...
-...
-```
+| Label | Meaning |
+|-------|---------|
+| `darkf-epic` | The tracker issue carrying the full functionality and phase list; never processed itself |
+| `darkf-todo` | Eligible for the pipeline (all children, from the start) |
+| `darkf-wip` | The pipeline has claimed a child and a ship task exists |
+| `darkf-failed` | Intake rejected a child; see the comment for what is missing |
+| `phase:N` | Display/feed aid only; never identity or ordering |
 
 ---
 
-## Quick Start (Pilot Tonight)
+## 2. Make the issue dark-factory-ready
 
-### 1. Add Issue Template to a Test Project
-```bash
-cd projects/brainiac  # or any registered project
-mkdir -p .github/ISSUE_TEMPLATE
-# Copy the template from above or create darkf-task.yml
-```
+Before the pipeline will touch an issue, three conditions must hold. The
+breakdown skill already satisfies them at create time; a hand-filed issue must
+satisfy them too.
 
-### 2. File a Test Issue
-- Create issue with the 4 sections
-- Add label `darkf-todo`
-- Note the issue URL
+1. **The `darkf-todo` label** - on the issue you want processed. Every child of
+   a phased feature is all-eligible from the start; the epic itself does not
+   carry `darkf-todo`.
+2. **The issue is assigned to you** - the current gh-axi user. A `darkf-todo`
+   issue assigned to someone else is a hard STOP for the serial run (it cannot
+   skip forward past work that needs a different owner).
+3. **The 4-section template is present** - in the body or any comment.
 
-### 3. Start the Secondmate
-```bash
-# From Firstmate root
-bin/fm-spawn.sh df-night-shift --harness pi --mode no-mistakes
-```
+### The 4-section template
 
-### 4. Verify It's Running
-```bash
-# Watch secondmate status
-tail -f state/df-night-shift.status
+| Section | Purpose |
+|---------|---------|
+| `### Problem` | What is broken / needs to change |
+| `### Impact` | Why this matters / user-facing impact |
+| `### Proposed Solution` | High-level approach (may be "figure it out") |
+| `### Acceptance Criteria` | Observable done condition (may be "make existing tests pass") |
 
-# Should show: working [key=intake-scan]: scanning N projects for darkf-todo issues
-# Then: done [key=intake-scan]: created M tasks, failed K validations
-```
-
-### 4. Trigger Manually (Optional)
-```bash
-# Test intake on your test issue
-bin/fm-darkf-intake.sh https://github.com/owner/repo/issues/123
-
-# Or trigger full scan
-bin/fm-darkf-trigger.sh
-```
-
-### 5. Before Bed
-```bash
-# Confirm secondmate is idle (empty queue = healthy)
-bin/fm-crew-state.sh df-night-shift
-
-# Add cron entry (adjust hours for your timezone)
-crontab -e
-# 0 0-5 * * * /path/to/firstmate/bin/fm-darkf-trigger.sh >> /tmp/darkf-trigger.log 2>&1
-```
-
-### 6. Morning
-```bash
-/bearings include PRs
-# Shows all draft PRs created overnight with full URLs
-# Review each PR, request changes if needed, approve → merge
-```
+For a phased feature, every child sub-issue carries this template. Order and
+identity come from the parent epic's sub-issue list (chapter 3), not from any
+`phase:N` label.
 
 ---
 
-## Monitoring & Debugging
+## 3. Run the intake: `/darkfactory` + `bin/fm-darkf-intake.sh`
 
-### Secondmate Status
-```bash
-# Live tail
-tail -f state/df-night-shift.status
+You start the night with `/darkfactory`. It finds the parent epics in the
+fleet's registered projects, walks each parent's ordered sub-issues, and runs
+each child through the intake script.
 
-# Recent history
-cat state/df-night-shift.status
+### Invocation
+
+```
+/darkfactory            # scan all registered projects in data/projects.md
+/darkfactory <project>  # /darkfactory brainiac collabhub  (one or more named)
 ```
 
-### Intake Logs
-```bash
-# Cron trigger log
-cat /tmp/darkf-trigger.log
+For each candidate child the intake script `bin/fm-darkf-intake.sh <issue-url>`
+enforces four gates, in order. Everything uses **gh-axi**; the current user is
+read live from `gh-axi api user`, never hardcoded.
 
-# Intake script output (in secondmate's inbox handling)
-# Check secondmate's state/<task-id>.status for each intake task
-```
+| # | Gate | On fail |
+|---|------|---------|
+| 1 | Open and carries `darkf-todo` | Skip (not ready) |
+| 2 | Assigned to the current gh-axi user | **STOP** (exit 5) - halt the serial chain |
+| 3 | (not in the all-eligible child flow; reserved for a labeled parent) | Skip - no point |
+| 4 | All 4 required sections present | Label `darkf-failed`, comment what is missing |
 
-### Backlog
-```bash
-# See created tasks
-bin/fm-tasks-axi.sh list --state queued --repo brainiac
+On passing all four, the script creates a **ship backlog task** for the issue's
+project, records `darkf_issue=`, `darkf_number=`, `darkf_repo=`, `darkf_assignee=`
+in the task's meta, and adds the `darkf-wip` label.
 
-# Full task detail
-bin/fm-tasks-axi.sh show <task-id> --full
-```
+`DRY_RUN=1 bin/fm-darkf-intake.sh <issue-url>` prints the gate decisions and the
+would-be task without creating anything.
 
-### Common Issues
+### The ordering rule (all-eligible, parent-ordered)
 
-| Symptom | Cause | Fix |
-|---------|-------|-----|
-| `fm-send failed` | Secondmate not running | `bin/fm-spawn.sh df-night-shift --harness pi` |
-| `gh not authenticated` | PAT expired/missing | `gh auth login` with correct scopes |
-| `repo not in projects.md` | Project not registered | `bin/fm-project-mode.sh add <project>` |
-| No tasks created | Issues missing template sections | Check issue has all 4 `###` headers |
-| PR not created | Validation pipeline failed | Check crew's `state/<task-id>.status` for failure details |
+The `darkfactory` skill walks each parent epic's sub-issues **in their creation
+order** (1, 2, 3 ...). Every child is already `darkf-todo` (all-eligible). It
+processes them serially, one PR at a time, waiting for a review-and-merge before
+the next (or auto-merge under yolo-on). If a child is `darkf-todo` but not
+assigned to the operator, the run STOPS at that child - the chain cannot skip
+forward past work that needs a different owner.
+
+An issue whose repo is not registered in `data/projects.md` is skipped with a
+note rather than aborting the scan.
 
 ---
 
-## What Happens to Failed Validations
+## 4. Dispatch: `/darkfactory` (the skill), serial and in order
 
-| Failure Point | Outcome |
-|---------------|---------|
-| Intake template missing sections | Issue labeled `darkf-failed`, commented, no backlog task |
-| Crew validation fails (tests/lint) | Task status `failed`, backlog Held, captain decides retry |
-| Crew stuck (stale wake) | `stuck-crewmate-recovery` attempts relaunch once |
-| Rate limit hit | gnhf-style exponential backoff, retries next hour |
-| PR merge conflict | Captain resolves manually; backlog stays queued |
+The created ship tasks are dispatched by the `darkfactory` skill through the
+normal firstmate ship lifecycle. Three rules govern the runtime of the night.
 
----
+- **Serially**: never two dark-factory ships at once. The next child dispatches
+  only after the current one's PR is reviewed AND merged (or auto-merged under
+  yolo-on). This avoids token spikes.
+- **In parent-ordered sequence**: children run in the parent epic's sub-issue
+  order. The `phase:N` label is never used to order.
+- **Token-limit resilience**: on a quota/token wall, stop and retry that item
+  when capacity clears instead of racing ahead or failing the night.
 
-## Extending the Pipeline
-
-### Add More Projects
-```bash
-# Register new project (auto-detects delivery mode)
-bin/fm-project-mode.sh add my-new-project
-# Adds to data/projects.md with no-mistakes-prod-only
-```
-
-### Change Agent/Harness
-Edit `config/crew-dispatch.json`:
-```json
-{
-  "name": "dark-factory-intake",
-  "harness": "claude",  // or codex, opencode
-  "model": "anthropic/claude-sonnet-4-5",
-  "effort": "xhigh"
-}
-```
-
-### Add Custom Validation
-Create a skill that runs before dispatch (e.g., security scan, dependency check) and hook it via dispatch profile or brief spec.
-
-### Use gnhf for Multi-Iteration Refinement
-In the brief's `{FIRSTMATE_SPEC}`, add:
-```
-Run gnhf --worktree --push --stop-when "tests pass and PR opened"
-```
-inside the worktree for iterative refinement before PR creation.
+Dispatch goes through the standard `fm-brief.sh` and `fm-spawn.sh` machine, in a
+clean isolated ship worktree, exactly as any other ship task would.
 
 ---
 
-## Safety Guarantees
+## 5. Deliver: the normal ship lifecycle
+
+Each dark-factory ship task follows the selected project's delivery mode, which
+is resolved per project from its registered posture with
+`bin/fm-project-mode.sh <project>` (output is `<mode> <yolo>`) and passed
+explicitly to `fm-brief` and `fm-spawn`.
+
+| Registry mode | Behavior |
+|---------------|----------|
+| `no-mistakes` | Full pipeline: review, tests, lint, docs, push, PR, CI |
+| `no-mistakes-prod-only` | Conditional policy - firstmate classifies each task's surface at dispatch (internal/release work ships direct-PR; product-facing or uncertain ships no-mistakes) |
+| `direct-PR` | Push + PR, no pipeline |
+| `local-only` | Stop at a clean branch; guarded local merge |
+
+The worker's brief maps the issue spec (problem, impact, proposed solution,
+acceptance criteria — chapter 2) into the task's `## Captain's intent`, with the
+build instructions under `## Firstmate spec`.
+
+---
+
+## 6. Merge: only what your posture allows
+
+`yolo` governs merge authority, per project.
+
+- `yolo: off` (the default) keeps everything at a PR for **your** review in the
+  morning.
+- `yolo: on` lets firstmate merge green, in-scope PRs itself while you sleep.
+
+Dark factory never merges anything except what a project's own registered `yolo`
+posture authorizes. A red or out-of-scope PR is never merged under either
+setting without your explicit word.
+
+---
+
+## Morning
+
+Run `/bearings include PRs` to see the PRs produced overnight with full URLs.
+Review each, request changes if needed, approve, and merge (yolo off keeps
+merges yours).
+
+---
+
+## The two disconnected chapters
+
+Dark Factory is a pipeline of two intentionally separate stages:
+
+1. **Creating the issue** (chapter 1) - `darkf-feature-breakdown` authors the
+   epic + phased issues. It is purely a GitHub authoring tool and runs whenever
+   the captain wants, independent of the overnight run.
+2. **Processing it into a PR** (chapters 2-6) - `/darkfactory` runs the issue
+   through intake, dispatch, delivery, and merge.
+
+They disconnect at the label: issues authored by chapter 1 are not processed
+until the captain runs `/darkfactory`, and chapter 1 can produce issues without
+ever running the pipeline. The `darkf-todo` label (all children are eligible)
+plus assignment to the operator is the hand-off between them.
+
+---
+
+## Files
+
+| Component | Location | Role |
+|-----------|----------|------|
+| Breakdown skill | `.agents/skills/darkf-feature-breakdown/SKILL.md` | Issue creation (chapter 1) |
+| Breakdown script | `bin/fm-darkf-breakdown.sh` | Authors epic + phased issues |
+| Dark-factory skill | `.agents/skills/darkfactory/SKILL.md` | The `/darkfactory` run (chapters 3-6) |
+| Intake reference | `.agents/skills/darkf-intake/SKILL.md` | Intake template + gate semantics |
+| Intake script | `bin/fm-darkf-intake.sh` | The four-gate intake (gh-axi, `DRY_RUN`) |
+| This file | `docs/dark-factory.md` | The whole workflow |
+
+## Safety
 
 | Guarantee | Mechanism |
 |-----------|-----------|
-| **No auto-merge** | `yolo: off` by default; captain merges in morning |
-| **Draft PRs only** | `gh pr create --draft` / no-mistakes opens draft |
-| **Isolated worktrees** | Each crew gets clean `git worktree`; no cross-contamination |
-| **Unlanded work protected** | Teardown refuses if worktree dirty or PR unmerged |
-| **Rate limits respected** | gnhf-style wait with exponential backoff |
-| **Captain approval required** | All merges escalate unless explicit `yolo: on` |
-| **Destructive actions blocked** | Firstmate hard rules prevent force/discard without explicit captain word |
-
----
-
-## Files Reference
-
-```
-firstmate/
-├── .agents/skills/
-│   ├── darkf-intake/
-│   │   └── SKILL.md                 # Intake validation skill
-│   └── darkf-feature-breakdown/
-│       └── SKILL.md                 # Feature breakdown skill (epic + phases)
-├── bin/
-│   ├── fm-darkf-intake.sh       # Validates issue, creates backlog task
-│   ├── fm-darkf-trigger.sh      # Cron trigger (checks schedule, fm-sends)
-│   └── fm-darkf-breakdown.sh    # Decomposes plan into epic + phased sub-issues
-├── config/
-│   ├── darkf-schedule           # START_HOUR/END_HOUR (UTC), AUTO_ADVANCE_PHASES
-│   └── crew-dispatch.json       # Dispatch profile for intake work
-├── data/
-│   └── df-night-shift/
-│       └── brief.md             # Secondmate charter (time-gated)
-├── docs/
-│   └── dark-factory.md          # This file
-└── projects/                    # Cloned repos (registered in data/projects.md)
-```
-
----
-
-## Related Documentation
-
-- `AGENTS.md` §7 — Task lifecycle, delivery modes, merge authority
-- `docs/project-configuration.md` — Project registry, delivery postures
-- `docs/configuration.md` — Full config schema (config/*, data/*, state/*)
-- `mlim1972/dark-factory` — Original dark-factory implementation (issue template, lease, sandbox, draft PR flow)
-- `kunchenguid/gnhf` — Overnight runner (worktree, commit/rollback, rate-limit wait, `--stop-when`)
-
----
-
-## TL;DR for Captain
-
-1. **Add issue template** to projects you want processed overnight
-2. **Label issues** `darkf-todo` with 4 sections filled
-3. **Start secondmate** once: `bin/fm-spawn.sh df-night-shift --harness pi`
-4. **Add cron** on your machine for 00:00–06:00 UTC hourly
-5. **Sleep**
-6. **Morning**: `/bearings include PRs` → review draft PRs → approve/merge
-
-**No merge happens without you.** The pipeline stops at draft PR.
+| No auto-merge unless yolo | Every task passes its project's registered yolo posture |
+| Only your issues | Assignee gate reads the live gh-axi user and STOPS on a foreign child |
+| Ordered phases | Parent epic's sub-issue list order, walked serially |
+| No token spikes | Strictly serial dispatch, merge before next |
+| Isolated work | Normal ship worktrees, unchanged |
+| Unlanded work protected | Teardown still refuses dirty/unmerged work |
