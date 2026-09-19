@@ -72,8 +72,28 @@ gh issue edit "$NEXT_ISSUE" --repo "$REPO" --add-label darkf-todo >/dev/null
 # Optionally remove darkf-wip if stuck from previous attempt
 gh issue edit "$NEXT_ISSUE" --repo "$REPO" --remove-label darkf-wip >/dev/null 2>&1 || true
 
+# Find completed phase issue (sub-issue of epic with phase:COMPLETED_PHASE label)
+COMPLETED_ISSUE=$(gh api graphql -f query="
+  query {
+    repository(owner: \"${REPO%/*}\", name: \"${REPO#*/}\") {
+      issue(number: $EPIC_NUM) {
+        subIssues(first: 20) {
+          nodes {
+            number
+            labels(first: 10) { nodes { name } }
+            state
+          }
+        }
+      }
+    }
+  }" --jq ".data.repository.issue.subIssues.nodes[] | select(.labels.nodes[].name == \"phase:$COMPLETED_PHASE\") | .number" 2>/dev/null || true)
+
 # Mark completed phase as darkf-done
-gh issue edit "$COMPLETED_PHASE" --repo "$REPO" --add-label darkf-done --remove-label darkf-todo >/dev/null 2>&1 || true
+if [ -n "$COMPLETED_ISSUE" ]; then
+  gh issue edit "$COMPLETED_ISSUE" --repo "$REPO" --add-label darkf-done --remove-label darkf-todo >/dev/null 2>&1 || true
+else
+  echo "warning: could not resolve issue number for Phase $COMPLETED_PHASE; skipping darkf-done label" >&2
+fi
 
 echo "Promoted: Phase $NEXT_PHASE (issue #$NEXT_ISSUE) now labeled darkf-todo"
 exit 0
