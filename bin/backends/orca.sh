@@ -181,9 +181,10 @@ fm_backend_orca_remove_worktree() {  # <worktree-id>
   local worktree_id=${1:-}
   [ -n "$worktree_id" ] || { echo "error: missing Orca worktree id; cannot remove worktree" >&2; return 1; }
   fm_backend_orca_tool_check || return 1
-  local out
+  local out status
   out=$(orca worktree rm --worktree "id:$worktree_id" --force --json 2>&1)
-  if [ $? -eq 0 ] && printf '%s' "$out" | fm_backend_orca_json_ok >/dev/null 2>&1; then
+  status=$?
+  if [ "$status" -eq 0 ] && printf '%s' "$out" | fm_backend_orca_json_ok >/dev/null 2>&1; then
     return 0
   fi
   # Idempotent: if worktree already gone (selector_not_found), treat as success
