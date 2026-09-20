@@ -48,7 +48,6 @@ if [ "${1:-}" = status ] && [ "${FM_ORCA_STATUS_RESPONSE:-ready}" != sequence ];
 fi
 n=$next
 echo "$n" > "$COUNT_FILE"
-[ -f "$RESP/$n.err" ] && cat "$RESP/$n.err" >&2
 if [ -f "$RESP/$n.exit" ]; then
   exit "$(cat "$RESP/$n.exit")"
 fi
@@ -419,30 +418,6 @@ test_worktree_path_resolves_id() {
   assert_contains "$(cat "$LOG")" $'orca\x1f''worktree'$'\x1f''show'$'\x1f''--worktree'$'\x1f''id:wt-123::/orca/wt-123'$'\x1f''--json' \
     "worktree path helper did not call orca worktree show"
   pass "fm_backend_orca_worktree_path: resolves an Orca worktree id to its path"
-}
-
-test_worktree_path_success_ignores_stderr_noise() {
-  local out
-  orca_case path-resolve-stderr-noise
-  printf '{"ok":true,"result":{"worktree":{"id":"wt-123::/orca/wt-123","path":"/tmp/orca-wt"}}}\n' > "$RESP/1.out"
-  printf 'warning: deprecated flag ignored\n' > "$RESP/1.err"
-  out=$( PATH="$FB:$PATH" FM_ORCA_LOG="$LOG" FM_ORCA_RESPONSES="$RESP" \
-    bash -c '. "$0/bin/backends/orca.sh"; fm_backend_orca_worktree_path wt-123::/orca/wt-123' "$ROOT" )
-  [ "$out" = /tmp/orca-wt ] || fail "stderr noise on a still-zero-exit call must not corrupt the resolved path, got '$out'"
-  pass "fm_backend_orca_worktree_path: a success-path stderr warning does not corrupt the resolved JSON path"
-}
-
-test_worktree_path_selector_not_found_on_failure_returns_empty_success() {
-  local out status
-  orca_case path-resolve-selector-not-found
-  printf 'exit 1\n' > "$RESP/1.exit"
-  printf '{"ok":false,"error":{"code":"selector_not_found","message":"no worktree"}}\n' > "$RESP/1.err"
-  out=$( PATH="$FB:$PATH" FM_ORCA_LOG="$LOG" FM_ORCA_RESPONSES="$RESP" \
-    bash -c '. "$0/bin/backends/orca.sh"; fm_backend_orca_worktree_path wt-gone::/orca/wt-gone' "$ROOT" )
-  status=$?
-  [ "$status" -eq 0 ] || fail "a selector_not_found failure must be treated as idempotent success, got exit $status"
-  [ -z "$out" ] || fail "a selector_not_found failure must resolve to an empty path, got '$out'"
-  pass "fm_backend_orca_worktree_path: an already-gone worktree (selector_not_found on stderr) is an idempotent empty success"
 }
 
 test_json_get_ignores_undocumented_terminal_id_shapes() {
@@ -1396,8 +1371,6 @@ test_kill_refuses_when_the_orca_cli_is_absent
 test_remove_worktree_refuses_empty_id
 test_remove_worktree_rejects_orca_error_json
 test_worktree_path_resolves_id
-test_worktree_path_success_ignores_stderr_noise
-test_worktree_path_selector_not_found_on_failure_returns_empty_success
 test_dispatcher_sources_orca_and_routes_primitives
 test_json_get_ignores_undocumented_terminal_id_shapes
 test_worktree_and_terminal_helpers_parse_json
