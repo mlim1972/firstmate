@@ -393,7 +393,7 @@ fm_backend_endpoint_atom_valid() {  # <value>
 # `::` split present, and the path half absolute.
 fm_backend_orca_worktree_id_valid() {  # <value>
   case "$1" in
-    ''|*$'\n'*|*$'\r'*|*$'\t'*) return 1 ;;
+    *$'\n'*|*$'\r'*|*$'\t'*) return 1 ;;
     *::*) ;;
     *) return 1 ;;
   esac
