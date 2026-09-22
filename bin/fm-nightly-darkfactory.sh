@@ -65,7 +65,7 @@ get_secondmate_task_id() {
   # Read task id from metadata
   for meta in "$STATE"/*.meta; do
     [ -e "$meta" ] || continue
-    if [ "$(grep -E '^kind=secondmate$' "$meta" 2>/dev/null)" ]; then
+    if grep -qE '^kind=secondmate$' "$meta" 2>/dev/null; then
       basename "$meta" .meta
       return 0
     fi
@@ -78,8 +78,18 @@ extract_corr_from_inbox() {
   local inbox_dir="$STATE/$task_id.inbox"
   [ -d "$inbox_dir" ] || return 1
   # Find the latest handled or unhandled inbox record
-  local latest_record
-  latest_record=$(ls -1 "$inbox_dir"/ 2>/dev/null | grep -E '^[0-9]+$' | sort -n | tail -1)
+  local latest_record=""
+  local record
+  for record in "$inbox_dir"/*; do
+    [ -e "$record" ] || continue
+    record=$(basename "$record")
+    case "$record" in
+      ''|*[!0-9]*) continue ;;
+    esac
+    if [ -z "$latest_record" ] || [ "$record" -gt "$latest_record" ]; then
+      latest_record="$record"
+    fi
+  done
   [ -n "$latest_record" ] || return 1
   local msg
   msg=$(cat "$inbox_dir/$latest_record" 2>/dev/null || true)
