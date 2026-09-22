@@ -55,7 +55,7 @@ done
 
 # ---- helpers ----------------------------------------------------------------
 
-log() { printf '[nightly-darkfactory] %s\n' "$*"; }
+log() { printf '[nightly-darkfactory] %s\n' "$*" >&2; }
 
 is_secondmate_home() {
   [ -f "$FM_HOME/.fm-secondmate-home" ]
@@ -298,7 +298,7 @@ run_darkfactory_pipeline() {
 
 if is_secondmate_home; then
   log "running on secondmate home"
-  TASK_ID=$(get_secondmate_task_id)
+  TASK_ID=$(get_secondmate_task_id) || true
   if [ -z "$TASK_ID" ]; then
     log "error: no secondmate task id found in $STATE"
     exit 1
@@ -317,12 +317,12 @@ if is_secondmate_home; then
   fi
 
   # Run pipeline and capture summary
-  SUMMARY=$(run_darkfactory_pipeline)
-  RC=$?
+  RC=0
+  SUMMARY=$(run_darkfactory_pipeline) || RC=$?
 
   # Write correlated done status line
   if [ -n "$CORR_ID" ]; then
-    local done_line="done [corr=$CORR_ID]: nightly darkfactory complete - $SUMMARY"
+    done_line="done [corr=$CORR_ID]: nightly darkfactory complete - $SUMMARY"
     # Use fm-wake-lib to append to status file
     . "$FM_ROOT/bin/fm-wake-lib.sh"
     fm_wake_status_append_self_announced "$STATE" "$STATE/$TASK_ID.status" "$done_line" || true
