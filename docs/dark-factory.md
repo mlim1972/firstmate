@@ -1,7 +1,8 @@
 # Dark Factory: The Full Workflow
 
 Dark Factory turns a feature idea into merged PRs while you sleep. You start it
-manually with `/darkfactory`; there is no scheduler, no cron, no secondmate.
+manually with `/darkfactory`. For scheduled or unattended runs (cron, secondmate),
+see [Running Overnight on a Secondmate](#running-overnight-on-a-secondmate-remote-machine) below.
 
 ## Running Overnight on a Secondmate (Remote Machine)
 

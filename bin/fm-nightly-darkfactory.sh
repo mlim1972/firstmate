@@ -97,7 +97,6 @@ run_darkfactory_pipeline() {
   # since the skill is designed for interactive invocation.
 
   local mode yolo
-  local summary_lines=()
   local phases_landed=0
   local phases_open=0
   local stopped_reason=""
@@ -187,7 +186,6 @@ run_darkfactory_pipeline() {
           "$FM_ROOT/bin/fm-darkf-intake.sh" "$issue_url" 2>&1) || {
           local rc=$?
           case $rc in
-            0) log "      $intake_out" ;;
             5)
               log "      STOP: $intake_out"
               stopped_reason="child #$child_num not assigned to captain"
@@ -265,11 +263,9 @@ run_darkfactory_pipeline() {
         if [ $pr_merged -eq 1 ]; then
           log "      phase landed: $task_id"
           phases_landed=$((phases_landed + 1))
-          summary_lines+=("  ✅ Landed: $project #$child_num")
         else
           log "      timeout or not merged: $task_id"
           phases_open=$((phases_open + 1))
-          summary_lines+=("  ⏳ Open: $project #$child_num (PR awaiting merge)")
         fi
 
       done <<< "$children"
@@ -322,7 +318,11 @@ if is_secondmate_home; then
 
   # Write correlated done status line
   if [ -n "$CORR_ID" ]; then
-    done_line="done [corr=$CORR_ID]: nightly darkfactory complete - $SUMMARY"
+    if [ "$RC" -eq 0 ]; then
+      done_line="done [corr=$CORR_ID]: nightly darkfactory complete - $SUMMARY"
+    else
+      done_line="done [corr=$CORR_ID]: nightly darkfactory failed (exit $RC)"
+    fi
     # Use fm-wake-lib to append to status file
     . "$FM_ROOT/bin/fm-wake-lib.sh"
     fm_wake_status_append_self_announced "$STATE" "$STATE/$TASK_ID.status" "$done_line" || true
