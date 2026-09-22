@@ -3,18 +3,64 @@
 Dark Factory turns a feature idea into merged PRs while you sleep. You start it
 manually with `/darkfactory`; there is no scheduler, no cron, no secondmate.
 
-This document walks the whole pipeline end to end, chapter by chapter, from the
-first step (creating the issue) to the last (merging the PR). Each chapter names
-the skill or script that owns it.
+## Running Overnight on a Secondmate (Remote Machine)
 
+To run the pipeline on a separate always-on machine, use the `nightly-darkfactory`
+skill and `bin/fm-nightly-darkfactory.sh`. This wrapper detects whether it runs
+on the main firstmate or a persistent secondmate and handles correlation
+automatically.
+
+### Option A: Main Firstmate Cron (no secondmate)
+
+```bash
+# Your machine runs the pipeline directly at 2 AM
+0 2 * * * FM_HOME=/path/to/firstmate /path/to/firstmate/bin/fm-nightly-darkfactory.sh
 ```
- 1. CREATE   darkf-feature-breakdown  plan/spec  ->  GitHub epic + phased issues
- 2. MAKE READY  labeling + assignee + 4 sections (done during create)
- 3. INTAKE   /darkfactory + fm-darkf-intake.sh   issues  ->  ship backlog tasks
- 4. DISPATCH /darkfactory (skill)                 tasks   ->  one at a time
- 5. DELIVER  fm-brief / fm-spawn (normal ship lifecycle)  ->  PR
- 6. MERGE    project yolo posture                 PR      ->  your review or auto
+Output appears in your chat session.
+
+### Option B: Main Firstmate Steers Secondmate (recommended)
+
+1. **Provision a remote secondmate** with the relevant projects cloned:
+   ```bash
+   export FM_SECONDMATE_CHARTER="Nightly dark-factory runner: execute /nightly-darkfactory on assigned darkf-epic sub-issues overnight, serially dispatching ships and waiting for merge before the next. Only processes issues assigned to the captain. Stops on foreign assignment. Runs on Herdr backend."
+   export FM_SECONDMATE_SCOPE="run darkfactory pipeline on darkf-todo issues assigned to captain across registered projects"
+   bin/fm-remote-home-seed.sh nightly-darkfactory \
+     your-remote-host \
+     /path/to/firstmate/code/root \
+     /path/to/secondmate/home \
+     brainiac=git@github.com:yourorg/brainiac.git \
+     collabhub=git@github.com:yourorg/collabhub.git \
+     # ... other projects with darkf-epic issues
+   bin/fm-spawn.sh nightly-darkfactory --secondmate
+   ```
+
+2. **Cron on main firstmate steers the secondmate**:
+   ```bash
+   # Main's cron at 2 AM steers the secondmate
+   0 2 * * * FM_HOME=/path/to/firstmate /path/to/firstmate/bin/fm-send.sh nightly-darkfactory "/nightly-darkfactory"
+   ```
+
+   How it works:
+   - `fm-send` creates a **pending-reply expectation** with a correlation ID (`corr=<16hex>`)
+   - Secondmate runs `nightly-darkfactory`, detects `.fm-secondmate-home`, extracts the `corr=` from its inbox
+   - Secondmate writes a correlated status line: `done [corr=...]: nightly darkfactory complete - <summary>`
+   - The remote reply mirror (or local status fold) resolves the parent's expectation automatically
+   - You see the outcome in your main chat via the supervision branch
+
+### Option C: Secondmate Self-Cron (standalone)
+
+```bash
+# Cron inside secondmate home (no parent tracking)
+0 2 * * * FM_HOME=/path/to/secondmate /path/to/secondmate/bin/fm-nightly-darkfactory.sh
 ```
+Fire-and-forget. Use only when you don't need the parent to track completion.
+
+### Prerequisites for All Options
+
+- Projects with `darkf-epic` issues must be registered in `data/projects.md`
+- `gh-axi` authenticated as the captain on the machine running the pipeline (assignee gate checks this)
+- Projects with `yolo: on` in registry auto-merge; others wait for captain review
+- On secondmate: projects must be cloned in the secondmate's home (via `fm-remote-home-seed.sh`)
 
 ---
 
@@ -230,8 +276,10 @@ plus assignment to the operator is the hand-off between them.
 | Breakdown skill | `.agents/skills/darkf-feature-breakdown/SKILL.md` | Issue creation (chapter 1) |
 | Breakdown script | `bin/fm-darkf-breakdown.sh` | Authors epic + phased issues |
 | Dark-factory skill | `.agents/skills/darkfactory/SKILL.md` | The `/darkfactory` run (chapters 3-6) |
+| Nightly wrapper skill | `.agents/skills/nightly-darkfactory/SKILL.md` | Secondmate-capable overnight runner |
 | Intake reference | `.agents/skills/darkf-intake/SKILL.md` | Intake template + gate semantics |
 | Intake script | `bin/fm-darkf-intake.sh` | The four-gate intake (gh-axi, `DRY_RUN`) |
+| Nightly wrapper script | `bin/fm-nightly-darkfactory.sh` | Scriptable runner with correlation |
 | This file | `docs/dark-factory.md` | The whole workflow |
 
 ## Safety
@@ -244,3 +292,4 @@ plus assignment to the operator is the hand-off between them.
 | No token spikes | Strictly serial dispatch, merge before next |
 | Isolated work | Normal ship worktrees, unchanged |
 | Unlanded work protected | Teardown still refuses dirty/unmerged work |
+| Secondmate correlation | Pending-reply expectation + correlated done status resolves automatically |
