@@ -59,10 +59,10 @@ Fire-and-forget. Use only when you don't need the parent to track completion.
 
 ### Prerequisites for All Options
 
-- Projects with `darkf-epic` issues must be registered in `data/projects.md`
+- The GitHub repo containing `darkf-epic` issues must be **in your fleet registry** (`data/projects.md`) so darkfactory knows to scan it. The registry maps project names to local clones and delivery posture; darkfactory reads the repo's `origin` remote to find the GitHub `owner/repo`.
 - `gh-axi` authenticated as the captain on the machine running the pipeline (assignee gate checks this)
 - Projects with `yolo: on` in registry auto-merge; others wait for captain review
-- On secondmate: projects must be cloned in the secondmate's home (via `fm-remote-home-seed.sh`)
+- On secondmate: projects must be cloned in the secondmate's `projects/` folder (done via `fm-remote-home-seed.sh` during provisioning — you run this once when setting up the secondmate)
 
 ---
 
@@ -71,6 +71,15 @@ Fire-and-forget. Use only when you don't need the parent to track completion.
 This is the freestanding front end. It exists independently of the rest of the
 pipeline, and it is the first of the two disconnected chapters: an issue is not
 born dark-factory-ready; something has to author it into that state.
+
+> **When to use it:** For multi-phase features that need ordered, serial
+> execution (Phase 1 → merge → Phase 2 → merge...). Each phase becomes a
+> separate PR that waits for the previous one to land.
+>
+> **When NOT to use it:** For a single, straightforward change. Just file a
+> regular GitHub issue with the 4-section template (chapter 2), label it
+> `darkf-todo`, assign to yourself, and run `/darkfactory` — it will pick it
+> up as a single work unit (no epic needed).
 
 `bin/fm-darkf-breakdown.sh` turns a feature plan into a GitHub issue hierarchy:
 
