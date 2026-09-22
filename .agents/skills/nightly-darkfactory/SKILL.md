@@ -38,10 +38,11 @@ summary to chat. No correlation ID is used.
 1. Reads its own task ID from metadata (or inbox)
 2. Reads the latest steer message from its steering inbox
 3. Extracts the `corr=<16hex>` token from the marker
-3. Runs the darkfactory pipeline
-4. Appends a correlated status line to its own `state/<task_id>.status`:
-   `done [corr=<corr_id>]: nightly darkfactory complete - <summary>`
-5. The remote reply mirror (if remote) or local status fold picks this up and
+4. Runs the darkfactory pipeline
+5. Appends a correlated status line to its own `state/<task_id>.status`:
+   - On success: `done [corr=<corr_id>]: nightly darkfactory complete - <summary>`
+   - On failure: `done [corr=<corr_id>]: nightly darkfactory failed (exit <rc>)`
+6. The remote reply mirror (if remote) or local status fold picks this up and
    resolves the parent's pending-reply expectation.
 
 ## Cron / Scheduling

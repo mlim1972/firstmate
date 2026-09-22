@@ -44,7 +44,8 @@ Output appears in your chat session.
    How it works:
    - `fm-send` creates a **pending-reply expectation** with a correlation ID (`corr=<16hex>`)
    - Secondmate runs `nightly-darkfactory`, detects `.fm-secondmate-home`, extracts the `corr=` from its inbox
-   - Secondmate writes a correlated status line: `done [corr=...]: nightly darkfactory complete - <summary>`
+   - Secondmate writes a correlated status line reporting success or failure
+     (exact formats in `.agents/skills/nightly-darkfactory/SKILL.md`)
    - The remote reply mirror (or local status fold) resolves the parent's expectation automatically
    - You see the outcome in your main chat via the supervision branch
 
