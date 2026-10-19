@@ -99,7 +99,7 @@ try {
   process.exit(2);
 }
 if (data.ok === false) {
-  const msg = data.error && (data.error.message || data.error.code);
+  const msg = data.error && [...new Set([data.error.code, data.error.message].filter(Boolean))].join(": ");
   if (msg) console.error(msg);
   process.exit(2);
 }

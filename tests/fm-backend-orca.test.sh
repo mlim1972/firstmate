@@ -1059,7 +1059,7 @@ test_ship_force_teardown_completes_orca_missing_worktree_path() {
   orca_case force-ship-path
   # Real orca answers a gone worktree selector with exit 1 and error JSON on stdout.
   for n in 1 2 3 4; do
-    printf '{"ok":false,"error":{"code":"selector_not_found","message":"selector_not_found"}}\n' > "$RESP/$n.out"
+    printf '{"ok":false,"error":{"code":"selector_not_found","message":"Worktree not found for selector id:gone"}}\n' > "$RESP/$n.out"
     printf '1\n' > "$RESP/$n.exit"
   done
   neutral=$(neutral_fm_root "$CASE_DIR/neutral")
