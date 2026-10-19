@@ -66,6 +66,7 @@ After those checks, Firstmate closes the exact terminal and releases the exact w
 It never raw-deletes an Orca worktree.
 A close the CLI never attempted, because `orca` is not on the path, stops cleanup with the metadata intact even under `--force`: removing those records would leave nothing on disk naming a terminal that may still be live.
 Reinstall the CLI and rerun; [`verification/runtime-backends.md`](verification/runtime-backends.md) "Endpoint close" owns what this arm can and cannot prove about its own close.
+A worktree whose directory is already gone is refused without `--force`; with `--force`, Orca's `selector_not_found` answer to the release counts as already removed, so teardown notes it and completes. Any other release failure prints Orca's error and retains the records.
 
 ## Active limits
 
