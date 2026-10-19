@@ -48,10 +48,10 @@ if [ "${1:-}" = status ] && [ "${FM_ORCA_STATUS_RESPONSE:-ready}" != sequence ];
 fi
 n=$next
 echo "$n" > "$COUNT_FILE"
+[ -f "$RESP/$n.out" ] && cat "$RESP/$n.out"
 if [ -f "$RESP/$n.exit" ]; then
   exit "$(cat "$RESP/$n.exit")"
 fi
-[ -f "$RESP/$n.out" ] && cat "$RESP/$n.out"
 exit 0
 SH
   chmod +x "$fb/orca"
@@ -1041,6 +1041,40 @@ test_ship_teardown_refuses_orca_missing_worktree_path() {
   pass "fm-teardown.sh backend=orca: ship teardown fails closed when worktree path is missing"
 }
 
+test_ship_force_teardown_completes_orca_missing_worktree_path() {
+  local proj wt data state config id out rc neutral
+  id="orcashipforcez9"
+  proj="$TMP_ROOT/force-ship-project"
+  wt="$TMP_ROOT/force-ship-wt"
+  data="$TMP_ROOT/force-ship-data"
+  state="$TMP_ROOT/force-ship-state"
+  config="$TMP_ROOT/force-ship-config"
+  fm_git_init_commit "$proj"
+  mkdir -p "$data/$id" "$state" "$config"
+  touch "$state/.last-watcher-beat"
+  fm_write_meta "$state/$id.meta" \
+    "window=fm-$id" "endpoint_task_id=$id" "terminal=term-force-ship" "worktree=$wt" "project=$proj" \
+    "harness=claude" "kind=ship" "mode=no-mistakes" "yolo=off" \
+    "backend=orca" "orca_worktree_id=wt-force-ship::/orca/wt-force-ship"
+  orca_case force-ship-path
+  # Real orca answers a gone worktree selector with exit 1 and error JSON on stdout.
+  for n in 1 2 3 4; do
+    printf '{"ok":false,"error":{"code":"selector_not_found","message":"selector_not_found"}}\n' > "$RESP/$n.out"
+    printf '1\n' > "$RESP/$n.exit"
+  done
+  neutral=$(neutral_fm_root "$CASE_DIR/neutral")
+  set +e
+  out=$( PATH="$FB:$PATH" FM_ORCA_LOG="$LOG" FM_ORCA_RESPONSES="$RESP" \
+    FM_ROOT_OVERRIDE="$neutral" FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CONFIG_OVERRIDE="$config" \
+    "$ROOT/bin/fm-teardown.sh" "$id" --force 2>&1 )
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "forced Orca ship teardown should complete when the worktree path is already gone"$'\n'"$out"
+  assert_contains "$out" "teardown $id complete" "forced Orca ship teardown should report what it did"
+  assert_absent "$state/$id.meta" "forced Orca ship teardown should remove the task record"
+  pass "fm-teardown.sh backend=orca: forced ship teardown completes when worktree path is missing"
+}
+
 test_ship_teardown_removes_orca_worktree_when_id_path_matches() {
   local proj wt data state config id out rc neutral
   id="orcashipmatchz2"
@@ -1393,6 +1427,7 @@ test_teardown_removes_orca_worktree_when_path_missing
 test_teardown_preserves_metadata_when_orca_remove_error_json
 test_scout_teardown_refuses_orca_missing_report_when_path_missing
 test_ship_teardown_refuses_orca_missing_worktree_path
+test_ship_force_teardown_completes_orca_missing_worktree_path
 test_ship_teardown_removes_orca_worktree_when_id_path_matches
 test_ship_teardown_refuses_orca_unresolvable_worktree_id
 test_ship_teardown_refuses_orca_id_path_mismatch

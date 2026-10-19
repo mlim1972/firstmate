@@ -3587,7 +3587,17 @@ if [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then
     fm_backend_kill "$BACKEND" "$T" "$(meta_value "$META" zellij_tab_id)" "fm-$ID" \
       || { endpoint_close_refusal "$ID" "$BACKEND" "$T" 0; exit 1; }
   fi
-  fm_backend_remove_worktree "$BACKEND" "$ORCA_WORKTREE_ID"
+  # A forced teardown of a worktree that is already gone has nothing left to remove:
+  # Orca answers its selector with selector_not_found, which is the goal state.
+  if ! orca_remove_err=$(fm_backend_remove_worktree "$BACKEND" "$ORCA_WORKTREE_ID" 2>&1); then
+    if [ "$FORCE" = "--force" ] && [ ! -e "$WT" ] && [[ $orca_remove_err == *selector_not_found* ]]; then
+      echo "note: Orca worktree $ORCA_WORKTREE_ID is already gone; nothing to remove" >&2
+    else
+      printf '%s\n' "$orca_remove_err" >&2
+      echo "error: Orca could not remove worktree $ORCA_WORKTREE_ID for $ID; retaining its task records" >&2
+      exit 1
+    fi
+  fi
 elif [ "$KIND" != secondmate ] && ! teardown_owns_worktree; then
   :
 elif [ -d "$WT" ] && [ "$KIND" != secondmate ]; then

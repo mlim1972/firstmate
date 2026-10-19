@@ -107,8 +107,14 @@ if (data.ok === false) {
 }
 
 fm_backend_orca_run_json() {
-  local out
-  out=$("$@") || return 1
+  local out rc=0
+  out=$("$@") || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    # A failing orca prints its error JSON on stdout; surface it rather than exit silently.
+    printf '%s' "$out" | fm_backend_orca_json_ok || true
+    echo "error: ${*:1:3} exited $rc" >&2
+    return 1
+  fi
   printf '%s' "$out" | fm_backend_orca_json_ok
 }
 
