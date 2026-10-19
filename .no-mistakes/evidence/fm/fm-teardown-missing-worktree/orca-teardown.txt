@@ -1,0 +1,3 @@
+119:ok - fm-teardown.sh backend=orca: ship teardown fails closed when worktree path is missing
+120:ok - fm-teardown.sh backend=orca: forced ship teardown completes when worktree path is missing
+124:ok - fm-teardown.sh backend=orca: refuses missing worktree ids before cleanup
