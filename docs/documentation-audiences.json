@@ -692,6 +692,26 @@
     {
       "path": ".agents/skills/validation-supervision/SKILL.md",
       "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/darkfactory/SKILL.md",
+      "audience": "operator-current"
+    },
+    {
+      "path": ".agents/skills/darkf-feature-breakdown/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/darkf-intake/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "docs/dark-factory.md",
+      "audience": "operator-current"
+    },
+    {
+      "path": ".agents/skills/nightly-darkfactory/SKILL.md",
+      "audience": "operator-current"
     }
   ]
 }
