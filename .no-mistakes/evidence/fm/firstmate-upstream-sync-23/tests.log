@@ -1,0 +1,16 @@
+== tests/fm-darkf-pipeline.test.sh
+ok - fm-darkf-intake: success path creates state/ on demand and records darkf_* meta
+ok - fm-darkf-breakdown: idempotent re-run against already-labeled repo prints no false warnings
+ok - fm-darkf-breakdown: a genuine label-create error still surfaces its warning
+exit 0
+== tests/fm-nightly-darkfactory.test.sh
+ok - fm-nightly-darkfactory: secondmate success path writes exactly one clean correlated done line
+ok - fm-nightly-darkfactory: secondmate failure path writes a failed (not misleading complete) correlated done line
+ok - fm-nightly-darkfactory: missing secondmate task id prints its diagnostic and exits 1 cleanly
+exit 0
+== tests/fm-watcher-lock.test.sh
+ok - startup cleanup waits for in-flight staging and publication, preserving foreign owners
+ok - a stop forced before the safe point waits for it and leaves no lock evidence
+ok - a watcher that cannot publish its identity exits through its cleanup
+ok - SIGSTOP distinguishes live PID from stale beacon and termination records the exit class
+exit 0
